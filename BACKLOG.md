@@ -9,10 +9,6 @@ If every item is checked, make no changes and say so.
 
 ## Items
 
-- [ ] **Menu-bar / Dock-aware tiling.** `tile_left`/`tile_right`/`toggle_split` use the
-  full Finder desktop bounds, so tiled windows sit under the menu bar. Use the
-  *visible* frame instead. Add a pure geometry helper (e.g. `visible_frame(bounds,
-  menubar_h, dock)`) with unit tests; keep the AppleScript execution thin.
 - [ ] **Multi-display awareness.** Detect which display the frontmost window is on and
   tile/clamp within that display's visible frame rather than always the primary.
   Add pure helpers + tests (no hardware).
@@ -31,3 +27,6 @@ If every item is checked, make no changes and say so.
 - [x] **CI: run pytest on every PR.** Added `.github/workflows/ci.yml` (GitHub Actions on
   Ubuntu / Python 3.11) that installs system OpenGL libs + `requirements.txt` + pytest and
   runs the suite on every PR and push to main.
+- [x] **Menu-bar / Dock-aware tiling.** Added pure `visible_frame(screen_w, screen_h,
+  menubar_h)` helper; `tile_left`/`tile_right`/`toggle_split` now place panes within the
+  visible frame (below the 25px menu bar) instead of full-screen-height under it.

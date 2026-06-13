@@ -38,6 +38,39 @@ def test_clamp_size_min_and_max():
     assert osc.clamp_size(800, 600) == (800, 600)
 
 
+def test_visible_frame_reserves_menu_bar():
+    # Default menu bar height (25) is reserved off the top.
+    assert osc.visible_frame(1440, 900) == (0, 25, 1440, 875)
+    assert osc.visible_frame(1000, 800, menubar_h=40) == (0, 40, 1000, 760)
+
+
+def test_visible_frame_clamps_menu_bar_to_screen():
+    # A menu bar taller than the screen can't yield a negative height.
+    assert osc.visible_frame(1000, 800, menubar_h=2000) == (0, 800, 1000, 0)
+    assert osc.visible_frame(1000, 800, menubar_h=0) == (0, 0, 1000, 800)
+
+
+def test_visible_frame_negative_menu_bar_floored_to_zero():
+    assert osc.visible_frame(1000, 800, menubar_h=-10) == (0, 0, 1000, 800)
+
+
+def test_tile_uses_visible_frame_below_menu_bar(monkeypatch):
+    # _tile should position at the visible-frame y (menu bar) and size to vh,
+    # never y=0 / full screen_h.
+    calls = []
+    ctrl = osc.OSWindowController(screen_w=1440, screen_h=900, menubar_h=25)
+
+    def fake_run(script):
+        calls.append(script)
+        return True, ""
+
+    monkeypatch.setattr(ctrl, "_run", fake_run)
+    assert ctrl.tile_left() == "tile_left"
+    # position script carries the menu-bar y (25), size script the reduced height (875).
+    assert "25" in calls[0]
+    assert "875" in calls[1]
+
+
 def test_map_normalized_mirrors_x_by_default():
     # nx=0 (hand at left of un-mirrored image) maps to right of screen.
     assert osc.map_normalized_to_screen(0.0, 0.0, 1000, 800) == (1000, 0)
@@ -113,15 +146,15 @@ def _stub_controller(responses):
 def test_tile_left_sets_position_and_size():
     ctrl = _stub_controller([(True, ""), (True, "")])
     assert ctrl.tile_left() == "tile_left"
-    assert "{0, 0}" in ctrl.scripts[0]
-    assert "{500, 800}" in ctrl.scripts[1]  # left half, full height
+    assert "{0, 25}" in ctrl.scripts[0]  # below the 25px menu bar
+    assert "{500, 775}" in ctrl.scripts[1]  # left half, visible-frame height
 
 
 def test_tile_right_uses_remaining_width():
     ctrl = _stub_controller([(True, ""), (True, "")])
     assert ctrl.tile_right() == "tile_right"
-    assert "{500, 0}" in ctrl.scripts[0]
-    assert "{500, 800}" in ctrl.scripts[1]
+    assert "{500, 25}" in ctrl.scripts[0]
+    assert "{500, 775}" in ctrl.scripts[1]
 
 
 def test_tile_reports_failure_from_run():
