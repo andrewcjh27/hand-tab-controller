@@ -66,9 +66,11 @@ def test_tile_uses_visible_frame_below_menu_bar(monkeypatch):
 
     monkeypatch.setattr(ctrl, "_run", fake_run)
     assert ctrl.tile_left() == "tile_left"
-    # position script carries the menu-bar y (25), size script the reduced height (875).
-    assert "25" in calls[0]
-    assert "875" in calls[1]
+    # calls[0] is the display-enumeration query (empty -> single-display
+    # fallback); the position script (menu-bar y 25) and size script (reduced
+    # height 875) follow it.
+    assert "25" in calls[1]
+    assert "875" in calls[2]
 
 
 def test_map_normalized_mirrors_x_by_default():
@@ -127,6 +129,117 @@ def test_parse_bounds():
     assert osc.parse_bounds("0, 0, 1440, 900") == (0, 0, 1440, 900)
 
 
+# ----- multi-display pure helpers ------------------------------------------
+def test_display_for_point_containment():
+    primary = (0, 0, 1440, 900)
+    secondary = (1440, 0, 1920, 1080)
+    displays = [primary, secondary]
+    # point inside primary
+    assert osc.display_for_point(100, 100, displays) == primary
+    # point inside secondary
+    assert osc.display_for_point(1500, 200, displays) == secondary
+    # boundary: top-left is inclusive, right/bottom exclusive
+    assert osc.display_for_point(0, 0, displays) == primary
+    assert osc.display_for_point(1440, 0, displays) == secondary
+
+
+def test_display_for_point_nearest_fallback_when_offscreen():
+    primary = (0, 0, 1000, 800)        # center (500, 400)
+    secondary = (1000, 0, 1000, 800)   # center (1500, 400)
+    displays = [primary, secondary]
+    # off-screen far to the right -> nearest is secondary
+    assert osc.display_for_point(5000, 400, displays) == secondary
+    # off-screen far to the left (negative) -> nearest is primary
+    assert osc.display_for_point(-500, 400, displays) == primary
+
+
+def test_display_for_point_empty_returns_none():
+    assert osc.display_for_point(10, 10, []) is None
+
+
+def test_clamp_rect_to_frame_already_inside_unchanged():
+    frame = (0, 25, 1000, 775)
+    assert osc.clamp_rect_to_frame(100, 100, 400, 300, frame) == (100, 100, 400, 300)
+
+
+def test_clamp_rect_to_frame_nudges_position_inside():
+    frame = (0, 25, 1000, 775)
+    # window pushed past right/bottom edges -> slid back in, size preserved
+    assert osc.clamp_rect_to_frame(900, 700, 400, 300, frame) == (600, 500, 400, 300)
+    # window above/left of frame -> snapped to frame origin
+    assert osc.clamp_rect_to_frame(-50, 0, 400, 300, frame) == (0, 25, 400, 300)
+
+
+def test_clamp_rect_to_frame_shrinks_when_larger_than_frame():
+    frame = (100, 50, 800, 600)
+    x, y, w, h = osc.clamp_rect_to_frame(0, 0, 5000, 5000, frame)
+    assert (w, h) == (800, 600)        # shrunk to frame size
+    assert (x, y) == (100, 50)         # and positioned at frame origin
+
+
+def test_clamp_rect_to_frame_offset_origin():
+    frame = (1440, 0, 1920, 1080)      # a secondary display
+    assert osc.clamp_rect_to_frame(2000, 100, 500, 400, frame) == (2000, 100, 500, 400)
+    # off the right edge of the secondary display -> slid in
+    assert osc.clamp_rect_to_frame(3500, 100, 500, 400, frame) == (2860, 100, 500, 400)
+
+
+def test_parse_display_frames_multiple():
+    # two displays as flat l,t,r,b groups
+    out = "0, 0, 1440, 900, 1440, 0, 3360, 1080"
+    assert osc.parse_display_frames(out) == [
+        (0, 0, 1440, 900),
+        (1440, 0, 1920, 1080),
+    ]
+
+
+def test_parse_display_frames_braces_and_partial():
+    # braces stripped; trailing partial group (<4) ignored
+    out = "{0, 0, 1000, 800, 1000}"
+    assert osc.parse_display_frames(out) == [(0, 0, 1000, 800)]
+
+
+def test_parse_display_frames_empty():
+    assert osc.parse_display_frames("") == []
+
+
+# ----- multi-display controller wiring -------------------------------------
+def test_active_display_frame_single_display_fallback():
+    # enumeration returns one frame -> fall back to primary visible frame.
+    ctrl = _stub_controller([(True, "0, 0, 1000, 800")])
+    assert ctrl._active_display_frame() == (0, 25, 1000, 775)
+
+
+def test_active_display_frame_enumeration_failure_fallback():
+    ctrl = _stub_controller([(False, "denied")])
+    assert ctrl._active_display_frame() == (0, 25, 1000, 775)
+
+
+def test_active_display_frame_picks_display_under_front_window():
+    # two displays; front window at x=1500 lives on the secondary display.
+    # responses: enumerate displays, then front-window position query.
+    ctrl = _stub_controller([
+        (True, "0, 0, 1000, 800, 1000, 0, 3000, 800"),
+        (True, "1500, 300"),
+    ])
+    # secondary frame (1000, 0, 2000, 800), menu bar reserved at its top.
+    assert ctrl._active_display_frame() == (1000, 25, 2000, 775)
+
+
+def test_tile_left_on_secondary_display():
+    # enumerate (2 displays), front position (secondary), then pos + size.
+    ctrl = _stub_controller([
+        (True, "0, 0, 1000, 800, 1000, 0, 3000, 800"),
+        (True, "1500, 300"),
+        (True, ""),
+        (True, ""),
+    ])
+    assert ctrl.tile_left() == "tile_left"
+    # left half of the secondary display: x=1000, y=25 (below menu bar)
+    assert "{1000, 25}" in ctrl.scripts[2]
+    assert "{1000, 775}" in ctrl.scripts[3]  # half of 2000 wide, 775 tall
+
+
 # ----- controller helpers with a stubbed _run -----------------------------
 def _stub_controller(responses):
     """Build a controller whose ``_run`` returns queued ``(ok, out)`` tuples
@@ -144,21 +257,24 @@ def _stub_controller(responses):
 
 
 def test_tile_left_sets_position_and_size():
-    ctrl = _stub_controller([(True, ""), (True, "")])
+    # scripts[0] is the (empty) display-enumeration query -> single-display
+    # fallback, so the position/size scripts follow it unchanged.
+    ctrl = _stub_controller([(True, ""), (True, ""), (True, "")])
     assert ctrl.tile_left() == "tile_left"
-    assert "{0, 25}" in ctrl.scripts[0]  # below the 25px menu bar
-    assert "{500, 775}" in ctrl.scripts[1]  # left half, visible-frame height
+    assert "{0, 25}" in ctrl.scripts[1]  # below the 25px menu bar
+    assert "{500, 775}" in ctrl.scripts[2]  # left half, visible-frame height
 
 
 def test_tile_right_uses_remaining_width():
-    ctrl = _stub_controller([(True, ""), (True, "")])
+    ctrl = _stub_controller([(True, ""), (True, ""), (True, "")])
     assert ctrl.tile_right() == "tile_right"
-    assert "{500, 25}" in ctrl.scripts[0]
-    assert "{500, 775}" in ctrl.scripts[1]
+    assert "{500, 25}" in ctrl.scripts[1]
+    assert "{500, 775}" in ctrl.scripts[2]
 
 
 def test_tile_reports_failure_from_run():
-    ctrl = _stub_controller([(False, "denied")])
+    # enumeration returns nothing (fallback), then the position script fails.
+    ctrl = _stub_controller([(True, ""), (False, "denied")])
     assert ctrl.tile_left() == "tile_left failed: denied"
 
 

@@ -9,9 +9,6 @@ If every item is checked, make no changes and say so.
 
 ## Items
 
-- [ ] **Multi-display awareness.** Detect which display the frontmost window is on and
-  tile/clamp within that display's visible frame rather than always the primary.
-  Add pure helpers + tests (no hardware).
 - [ ] **Config validation with clear errors.** Validate `gestures.json` on load:
   unknown gesture names, unknown action names, out-of-range thresholds → raise/log a
   clear message instead of silently misbehaving. Unit-test the validator.
@@ -24,6 +21,13 @@ If every item is checked, make no changes and say so.
 
 ## Done
 
+- [x] **Multi-display awareness.** Added pure helpers `display_for_point` (containment with
+  nearest-center fallback for off-screen windows; `None` on empty list), `clamp_rect_to_frame`
+  (fit/shrink a window rect into a display frame), `parse_display_frames`, and a thin
+  `build_list_displays_script` builder. The controller's new `_active_display_frame` resolves the
+  display under the front window and `_tile`/`toggle_split` now tile within that display's visible
+  frame, falling back safely to the primary display when enumeration fails or returns <2 displays
+  (single-display results unchanged). The menu bar is assumed to apply to every display's top.
 - [x] **CI: run pytest on every PR.** Added `.github/workflows/ci.yml` (GitHub Actions on
   Ubuntu / Python 3.11) that installs system OpenGL libs + `requirements.txt` + pytest and
   runs the suite on every PR and push to main.

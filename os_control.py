@@ -91,6 +91,52 @@ def visible_frame(
     return (0, mb, screen_w, screen_h - mb)
 
 
+def display_for_point(
+    px: float, py: float, displays: List[Tuple[int, int, int, int]]
+) -> Optional[Tuple[int, int, int, int]]:
+    """Pick the display frame ``(x, y, w, h)`` that a point belongs to.
+
+    Returns the first frame whose rectangle *contains* ``(px, py)``. If no frame
+    contains the point (e.g. the window is off-screen), returns the frame whose
+    center is nearest to the point so it still resolves to *some* display.
+    Returns ``None`` only when ``displays`` is empty.
+    """
+    if not displays:
+        return None
+    for (x, y, w, h) in displays:
+        if x <= px < x + w and y <= py < y + h:
+            return (x, y, w, h)
+    # Nothing contained the point: fall back to the nearest display center.
+    def _dist2(frame: Tuple[int, int, int, int]) -> float:
+        x, y, w, h = frame
+        cx, cy = x + w / 2.0, y + h / 2.0
+        return (cx - px) ** 2 + (cy - py) ** 2
+
+    return min(displays, key=_dist2)
+
+
+def clamp_rect_to_frame(
+    x: float, y: float, w: float, h: float, frame: Tuple[int, int, int, int]
+) -> Tuple[int, int, int, int]:
+    """Clamp a window rect ``(x, y, w, h)`` so it fits inside ``frame``.
+
+    Size is preserved where possible; if the window is larger than ``frame`` in
+    either dimension it is shrunk to fit. The position is then nudged so the
+    (possibly shrunk) window lies fully within ``frame``. Returns integers.
+    """
+    fx, fy, fw, fh = frame
+    cw = min(int(round(w)), fw)
+    ch = min(int(round(h)), fh)
+    cx = int(round(x))
+    cy = int(round(y))
+    # Keep the right/bottom edges inside the frame, then the left/top edges.
+    cx = min(cx, fx + fw - cw)
+    cy = min(cy, fy + fh - ch)
+    cx = max(cx, fx)
+    cy = max(cy, fy)
+    return cx, cy, cw, ch
+
+
 def map_normalized_to_screen(
     nx: float, ny: float, screen_w: int, screen_h: int, mirror_x: bool = True
 ) -> Tuple[int, int]:
@@ -174,6 +220,19 @@ def build_screen_size_script() -> str:
     )
 
 
+def build_list_displays_script() -> str:
+    """AppleScript returning every display's size as ``w1, h1, w2, h2, ...``.
+
+    Enumerating *per-display origins* via System Events is unreliable, so this
+    only asks for desktop sizes. ``parse_display_frames`` turns the flat number
+    list into frames; callers MUST fall back to single-display behavior when
+    fewer than two displays are returned (see ``OSWindowController``).
+    """
+    return (
+        'tell application "Finder" to get bounds of every window of desktop'
+    )
+
+
 def build_set_app_window_bounds_script(
     app_name: str, x: int, y: int, w: int, h: int
 ) -> str:
@@ -210,6 +269,30 @@ def parse_bounds(output: str) -> Tuple[int, int, int, int]:
     if len(nums) < 4:
         raise ValueError(f"expected four numbers, got: {output!r}")
     return nums[0], nums[1], nums[2], nums[3]
+
+
+def parse_display_frames(output: str) -> List[Tuple[int, int, int, int]]:
+    """Parse osascript bounds output into a list of display frames.
+
+    Accepts either a flat ``l, t, r, b, l, t, r, b, ...`` stream (groups of
+    four, the natural ``bounds`` output) and converts each ``(l, t, r, b)`` to a
+    frame ``(x, y, w, h)``. Any trailing numbers that don't form a complete
+    group of four are ignored. Returns an empty list when nothing parses.
+    """
+    parts = [p.strip() for p in output.replace("{", "").replace("}", "").split(",")]
+    nums: List[int] = []
+    for p in parts:
+        if not p:
+            continue
+        try:
+            nums.append(int(round(float(p))))
+        except ValueError:
+            continue
+    frames: List[Tuple[int, int, int, int]] = []
+    for i in range(0, len(nums) - 3, 4):
+        left, top, right, bottom = nums[i : i + 4]
+        frames.append((left, top, right - left, bottom - top))
+    return frames
 
 
 # ---------------------------------------------------------------------------
@@ -343,40 +426,93 @@ class OSWindowController:
             return "resize failed: no window"
         return self.set_window_size(size[0] * scale, size[1] * scale)
 
-    # ----- tiling / split ----------------------------------------------
-    def _tile(self, label: str, x: int, w: int) -> str:
-        """Move+resize the front window to a pane at ``x`` of width ``w``.
+    # ----- display selection -------------------------------------------
+    def _enumerate_displays(self) -> List[Tuple[int, int, int, int]]:
+        """Query the connected displays' frames, or ``[]`` on any failure.
 
-        The pane spans the visible frame (below the menu bar), not the full
-        screen, so the title bar isn't hidden under the menu bar.
+        Per-display origin enumeration via osascript is unreliable, so this may
+        legitimately return fewer frames than the user has displays. Callers
+        treat ``<2`` results as "single display" and fall back accordingly.
         """
-        _, vy, _, vh = visible_frame(self.screen_w, self.screen_h, self.menubar_h)
-        ok, out = self._run(build_set_position_script(x, vy))
+        ok, out = self._run(build_list_displays_script())
+        if not ok:
+            return []
+        try:
+            return parse_display_frames(out)
+        except ValueError:
+            return []
+
+    def _primary_visible_frame(self) -> Tuple[int, int, int, int]:
+        """The cached primary display's usable rect (below the menu bar)."""
+        return visible_frame(self.screen_w, self.screen_h, self.menubar_h)
+
+    def _active_display_frame(self) -> Tuple[int, int, int, int]:
+        """Visible frame of the display the front window is on.
+
+        Falls back to the primary visible frame whenever display enumeration
+        fails, returns <2 displays, or the front window position is unknown —
+        so behavior on a single-display Mac matches the original primary-only
+        logic. The menu bar is assumed to occupy the top of *every* display
+        (a simplification; see ``visible_frame``).
+        """
+        displays = self._enumerate_displays()
+        if len(displays) < 2:
+            return self._primary_visible_frame()
+        pos = self._front_position()
+        if pos is None:
+            return self._primary_visible_frame()
+        frame = display_for_point(pos[0], pos[1], displays)
+        if frame is None:
+            return self._primary_visible_frame()
+        fx, fy, fw, fh = frame
+        # Reserve the menu bar at this display's top.
+        _, _, vw, vh = visible_frame(fw, fh, self.menubar_h)
+        mb = max(0, min(self.menubar_h, fh))
+        return (fx, fy + mb, vw, vh)
+
+    # ----- tiling / split ----------------------------------------------
+    def _tile(self, label: str, left_half: bool) -> str:
+        """Move+resize the front window to the left or right half of a frame.
+
+        Tiling happens within the *active display's* visible frame (below the
+        menu bar) rather than always the primary, so a window on a secondary
+        display tiles on that display. ``left_half`` selects the left pane;
+        otherwise the right pane (remaining width).
+        """
+        fx, fy, fw, fh = self._active_display_frame()
+        half = fw // 2
+        if left_half:
+            x, w = fx, half
+        else:
+            x, w = fx + half, fw - half
+        ok, out = self._run(build_set_position_script(x, fy))
         if not ok:
             return f"{label} failed: {out}"
-        ok2, out2 = self._run(build_set_size_script(w, vh))
+        ok2, out2 = self._run(build_set_size_script(w, fh))
         return label if ok2 else f"{label} failed: {out2}"
 
     def tile_left(self) -> str:
-        """Tile the front window to the left half of the main screen."""
-        return self._tile("tile_left", 0, self.screen_w // 2)
+        """Tile the front window to the left half of its display."""
+        return self._tile("tile_left", True)
 
     def tile_right(self) -> str:
-        """Tile the front window to the right half of the main screen."""
-        half = self.screen_w // 2
-        return self._tile("tile_right", half, self.screen_w - half)
+        """Tile the front window to the right half of its display."""
+        return self._tile("tile_right", False)
 
     def toggle_split(self) -> str:
-        """Tile the front window left and the previously-front app right."""
+        """Tile the front window left and the previously-front app right.
+
+        Both panes are placed within the active display's visible frame.
+        """
         ok, front = self._run(build_frontmost_app_script())
-        left_msg = self.tile_left()
+        fx, fy, fw, fh = self._active_display_frame()
+        left_msg = self._tile("tile_left", True)
         prev = self._prev_front
         if prev and ok and prev != front:
-            half = self.screen_w // 2
-            _, vy, _, vh = visible_frame(self.screen_w, self.screen_h, self.menubar_h)
+            half = fw // 2
             self._run(
                 build_set_app_window_bounds_script(
-                    prev, half, vy, self.screen_w - half, vh
+                    prev, fx + half, fy, fw - half, fh
                 )
             )
             return f"split: {front} | {prev}"
