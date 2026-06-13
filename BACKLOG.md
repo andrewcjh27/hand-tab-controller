@@ -9,9 +9,6 @@ If every item is checked, make no changes and say so.
 
 ## Items
 
-- [ ] **CI: run pytest on every PR.** Add `.github/workflows/ci.yml` (GitHub Actions)
-  that installs `requirements.txt` + pytest on Ubuntu and runs the suite. This lets
-  the babysit loop gate merges on green tests. No app-code changes.
 - [ ] **Menu-bar / Dock-aware tiling.** `tile_left`/`tile_right`/`toggle_split` use the
   full Finder desktop bounds, so tiled windows sit under the menu bar. Use the
   *visible* frame instead. Add a pure geometry helper (e.g. `visible_frame(bounds,
@@ -31,4 +28,6 @@ If every item is checked, make no changes and say so.
 
 ## Done
 
-(completed items move here with their PR link)
+- [x] **CI: run pytest on every PR.** Added `.github/workflows/ci.yml` (GitHub Actions on
+  Ubuntu / Python 3.11) that installs system OpenGL libs + `requirements.txt` + pytest and
+  runs the suite on every PR and push to main.
