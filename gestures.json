@@ -1,0 +1,24 @@
+{
+  "backend": "os",
+  "camera_index": 0,
+  "mappings": {
+    "SWIPE_LEFT": "prev_app",
+    "SWIPE_RIGHT": "next_app",
+    "PINCH": "resize_shrink",
+    "SPREAD": "resize_grow",
+    "POINT": "begin_move",
+    "GRAB": "drag_move",
+    "OPEN_PALM": "release",
+    "TWO_HAND_PINCH": "resize_two_hand",
+    "V_SIGN": "toggle_split"
+  },
+  "thresholds": {
+    "swipe_velocity": 0.04,
+    "pinch_sensitivity": 0.05,
+    "pinch_threshold": 0.4,
+    "smoothing_window": 5,
+    "cooldown_ms": 600,
+    "move_speed": 40,
+    "resize_step": 0.1
+  }
+}
