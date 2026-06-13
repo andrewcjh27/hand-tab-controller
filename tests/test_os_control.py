@@ -146,15 +146,15 @@ def _stub_controller(responses):
 def test_tile_left_sets_position_and_size():
     ctrl = _stub_controller([(True, ""), (True, "")])
     assert ctrl.tile_left() == "tile_left"
-    assert "{0, 0}" in ctrl.scripts[0]
-    assert "{500, 800}" in ctrl.scripts[1]  # left half, full height
+    assert "{0, 25}" in ctrl.scripts[0]  # below the 25px menu bar
+    assert "{500, 775}" in ctrl.scripts[1]  # left half, visible-frame height
 
 
 def test_tile_right_uses_remaining_width():
     ctrl = _stub_controller([(True, ""), (True, "")])
     assert ctrl.tile_right() == "tile_right"
-    assert "{500, 0}" in ctrl.scripts[0]
-    assert "{500, 800}" in ctrl.scripts[1]
+    assert "{500, 25}" in ctrl.scripts[0]
+    assert "{500, 775}" in ctrl.scripts[1]
 
 
 def test_tile_reports_failure_from_run():
