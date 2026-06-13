@@ -1,6 +1,7 @@
 """Unit tests for pure gesture math. No camera / mediapipe required."""
 
 import numpy as np
+import pytest
 
 from gestures import (
     GestureType,
@@ -99,6 +100,18 @@ def test_vertical_motion_rejected():
     for y in (0.2, 0.4, 0.6, 0.8, 0.95):
         tracker.update((0.5, y))
     assert detect_swipe(tracker, velocity_threshold=0.04) is None
+
+
+def test_velocity_tracker_travel_and_sample_count():
+    tracker = VelocityTracker(window=3)
+    assert tracker.sample_count == 0
+    assert tracker.horizontal_travel() == 0.0  # too few samples
+    for x in (0.2, 0.5, 0.9):
+        tracker.update((x, 0.5))
+    assert tracker.sample_count == 3  # capped at window
+    assert tracker.horizontal_travel() == pytest.approx(0.7)
+    tracker.reset()
+    assert tracker.sample_count == 0
 
 
 def test_pinch_in_and_spread_out():
