@@ -94,6 +94,64 @@ def test_parse_bounds():
     assert osc.parse_bounds("0, 0, 1440, 900") == (0, 0, 1440, 900)
 
 
+# ----- controller helpers with a stubbed _run -----------------------------
+def _stub_controller(responses):
+    """Build a controller whose ``_run`` returns queued ``(ok, out)`` tuples
+    and records the scripts it was asked to run."""
+    ctrl = osc.OSWindowController(screen_w=1000, screen_h=800)
+    queue = list(responses)
+    ctrl.scripts = []
+
+    def fake_run(script):
+        ctrl.scripts.append(script)
+        return queue.pop(0) if queue else (True, "")
+
+    ctrl._run = fake_run
+    return ctrl
+
+
+def test_tile_left_sets_position_and_size():
+    ctrl = _stub_controller([(True, ""), (True, "")])
+    assert ctrl.tile_left() == "tile_left"
+    assert "{0, 0}" in ctrl.scripts[0]
+    assert "{500, 800}" in ctrl.scripts[1]  # left half, full height
+
+
+def test_tile_right_uses_remaining_width():
+    ctrl = _stub_controller([(True, ""), (True, "")])
+    assert ctrl.tile_right() == "tile_right"
+    assert "{500, 0}" in ctrl.scripts[0]
+    assert "{500, 800}" in ctrl.scripts[1]
+
+
+def test_tile_reports_failure_from_run():
+    ctrl = _stub_controller([(False, "denied")])
+    assert ctrl.tile_left() == "tile_left failed: denied"
+
+
+def test_next_app_cycles_via_helper():
+    # _refresh_cycle: list apps, then frontmost; then activate.
+    ctrl = _stub_controller([(True, "A, B, C"), (True, "A"), (True, "")])
+    assert ctrl.next_app() == "next_app -> B"
+
+
+def test_prev_app_wraps_via_helper():
+    ctrl = _stub_controller([(True, "A, B, C"), (True, "A"), (True, "")])
+    assert ctrl.prev_app() == "prev_app -> C"
+
+
+def test_next_app_no_apps():
+    ctrl = _stub_controller([(False, "err"), (False, "err")])
+    assert ctrl.next_app() == "no apps to cycle"
+
+
+def test_query_coords_parses_and_handles_failure():
+    ctrl = _stub_controller([(True, "10, 20")])
+    assert ctrl._front_position() == (10, 20)
+    ctrl = _stub_controller([(False, "no window")])
+    assert ctrl._front_size() is None
+
+
 # ----- two-hand scale mapping ----------------------------------------------
 def test_two_hand_scale_maps_and_clamps():
     assert two_hand_scale(0.5) == 1.0          # 0.5 + 0.5
