@@ -8,7 +8,12 @@ OSActionRouter wired to a fake controller.
 import pytest
 
 import os_control as osc
-from actions import OSActionRouter
+from actions import (
+    TWO_HAND_MAX_SCALE,
+    TWO_HAND_MIN_SCALE,
+    OSActionRouter,
+    two_hand_scale,
+)
 from config import Config, DEFAULT_OS_MAPPINGS, load_config, resolve_camera_index
 from gestures import Gesture, GestureType
 
@@ -87,6 +92,14 @@ def test_parse_coords_bad():
 
 def test_parse_bounds():
     assert osc.parse_bounds("0, 0, 1440, 900") == (0, 0, 1440, 900)
+
+
+# ----- two-hand scale mapping ----------------------------------------------
+def test_two_hand_scale_maps_and_clamps():
+    assert two_hand_scale(0.5) == 1.0          # 0.5 + 0.5
+    assert two_hand_scale(0.0) == TWO_HAND_MIN_SCALE
+    assert two_hand_scale(-5.0) == TWO_HAND_MIN_SCALE   # clamped low
+    assert two_hand_scale(5.0) == TWO_HAND_MAX_SCALE    # clamped high
 
 
 # ----- fake controller + router -------------------------------------------

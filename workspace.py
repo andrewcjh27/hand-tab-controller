@@ -5,8 +5,27 @@ No camera, OpenCV or MediaPipe imports -- fully unit-testable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
+
+# Default canvas dimensions (pixels) for the in-app demo workspace.
+DEFAULT_CANVAS_W = 1280
+DEFAULT_CANVAS_H = 720
+
+# Default tab geometry (pixels).
+DEFAULT_TAB_X = 50
+DEFAULT_TAB_Y = 80
+DEFAULT_TAB_W = 320
+DEFAULT_TAB_H = 220
+
+# Tab size clamps applied when resizing (pixels).
+MIN_TAB_SIZE = 80
+MAX_TAB_SIZE = 2000
+
+# Double-view (split) layout: outer margin and vertical inset (pixels).
+SPLIT_MARGIN = 20
+SPLIT_TOP = 80
+SPLIT_VERTICAL_INSET = 160
 
 
 @dataclass
@@ -18,10 +37,10 @@ class Tab:
 
     id: int
     title: str
-    x: int = 50
-    y: int = 80
-    w: int = 320
-    h: int = 220
+    x: int = DEFAULT_TAB_X
+    y: int = DEFAULT_TAB_Y
+    w: int = DEFAULT_TAB_W
+    h: int = DEFAULT_TAB_H
     active: bool = False
 
 
@@ -32,7 +51,8 @@ class Workspace:
     and a double (split) view showing two tabs side by side.
     """
 
-    def __init__(self, canvas_w: int = 1280, canvas_h: int = 720) -> None:
+    def __init__(self, canvas_w: int = DEFAULT_CANVAS_W,
+                 canvas_h: int = DEFAULT_CANVAS_H) -> None:
         self.canvas_w = canvas_w
         self.canvas_h = canvas_h
         self.tabs: List[Tab] = []
@@ -41,8 +61,8 @@ class Workspace:
         self._next_id: int = 1
 
     # ----- construction -------------------------------------------------
-    def add_tab(self, title: str, x: int = 50, y: int = 80,
-                w: int = 320, h: int = 220) -> Tab:
+    def add_tab(self, title: str, x: int = DEFAULT_TAB_X, y: int = DEFAULT_TAB_Y,
+                w: int = DEFAULT_TAB_W, h: int = DEFAULT_TAB_H) -> Tab:
         """Add a new tab and make it active."""
         tab = Tab(id=self._next_id, title=title, x=x, y=y, w=w, h=h)
         self._next_id += 1
@@ -106,8 +126,8 @@ class Workspace:
         tab.y = int(max(0, min(self.canvas_h - tab.h, tab.y + dy)))
         return tab
 
-    def resize_active_tab(self, scale: float,
-                          min_size: int = 80, max_size: int = 2000) -> Optional[Tab]:
+    def resize_active_tab(self, scale: float, min_size: int = MIN_TAB_SIZE,
+                          max_size: int = MAX_TAB_SIZE) -> Optional[Tab]:
         """Scale the active tab's size by ``scale`` about its top-left corner."""
         tab = self.active_tab
         if tab is None:
@@ -125,8 +145,7 @@ class Workspace:
 
     def split_view(self) -> bool:
         """Enable double view (idempotent)."""
-        if not self.double_view:
-            self.double_view = True
+        self.double_view = True
         self.layout_double_view()
         return self.double_view
 
@@ -142,10 +161,11 @@ class Workspace:
         left = self.active_tab
         right_index = (self._active_index + 1) % len(self.tabs)
         right = self.tabs[right_index] if len(self.tabs) > 1 else None
-        margin = 20
+        pane_w = half - 2 * SPLIT_MARGIN
+        pane_h = self.canvas_h - SPLIT_VERTICAL_INSET
         if left is not None:
-            left.x, left.y = margin, 80
-            left.w, left.h = half - 2 * margin, self.canvas_h - 160
+            left.x, left.y = SPLIT_MARGIN, SPLIT_TOP
+            left.w, left.h = pane_w, pane_h
         if right is not None and right is not left:
-            right.x, right.y = half + margin, 80
-            right.w, right.h = half - 2 * margin, self.canvas_h - 160
+            right.x, right.y = half + SPLIT_MARGIN, SPLIT_TOP
+            right.w, right.h = pane_w, pane_h

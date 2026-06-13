@@ -36,6 +36,7 @@ INDEX_MCP = 5
 INDEX_TIP = 8
 MIDDLE_MCP = 9
 MIDDLE_TIP = 12
+RING_MCP = 13
 RING_TIP = 16
 PINKY_MCP = 17
 PINKY_TIP = 20
@@ -142,7 +143,7 @@ def count_extended_fingers(landmarks: np.ndarray) -> int:
     pairs = [
         (INDEX_TIP, INDEX_MCP),
         (MIDDLE_TIP, MIDDLE_MCP),
-        (RING_TIP, 13),
+        (RING_TIP, RING_MCP),
         (PINKY_TIP, PINKY_MCP),
     ]
     return sum(finger_extended(landmarks, tip, mcp) for tip, mcp in pairs)
@@ -169,7 +170,7 @@ def is_point(landmarks: np.ndarray) -> bool:
     index = finger_extended(landmarks, INDEX_TIP, INDEX_MCP)
     others = (
         finger_extended(landmarks, MIDDLE_TIP, MIDDLE_MCP)
-        + finger_extended(landmarks, RING_TIP, 13)
+        + finger_extended(landmarks, RING_TIP, RING_MCP)
         + finger_extended(landmarks, PINKY_TIP, PINKY_MCP)
     )
     return index and others == 0
@@ -183,7 +184,7 @@ def is_v_sign(landmarks: np.ndarray) -> bool:
     index = finger_extended(landmarks, INDEX_TIP, INDEX_MCP)
     middle = finger_extended(landmarks, MIDDLE_TIP, MIDDLE_MCP)
     others = (
-        finger_extended(landmarks, RING_TIP, 13)
+        finger_extended(landmarks, RING_TIP, RING_MCP)
         + finger_extended(landmarks, PINKY_TIP, PINKY_MCP)
     )
     return index and middle and others == 0
@@ -209,12 +210,17 @@ class VelocityTracker:
     """
 
     window: int = 5
-    _xs: Deque[float] = field(default_factory=lambda: deque(maxlen=5))
-    _ys: Deque[float] = field(default_factory=lambda: deque(maxlen=5))
+    _xs: Deque[float] = field(default_factory=deque, init=False)
+    _ys: Deque[float] = field(default_factory=deque, init=False)
 
     def __post_init__(self) -> None:
         self._xs = deque(maxlen=self.window)
         self._ys = deque(maxlen=self.window)
+
+    @property
+    def sample_count(self) -> int:
+        """Number of buffered samples (at most ``window``)."""
+        return len(self._xs)
 
     def update(self, position: Sequence[float]) -> None:
         """Push a new (x, y) palm centroid."""
@@ -234,6 +240,12 @@ class VelocityTracker:
             return 0.0
         return (self._xs[-1] - self._xs[0]) / (len(self._xs) - 1)
 
+    def horizontal_travel(self) -> float:
+        """Absolute horizontal distance covered over the buffered window."""
+        if len(self._xs) < 2:
+            return 0.0
+        return abs(self._xs[-1] - self._xs[0])
+
     def vertical_spread(self) -> float:
         """Vertical travel over the window (used to reject diagonal motion)."""
         if len(self._ys) < 2:
@@ -252,8 +264,7 @@ def detect_swipe(
     vx = tracker.horizontal_velocity()
     if abs(vx) < velocity_threshold:
         return None
-    horizontal_travel = abs(vx) * (len(tracker._xs) - 1)
-    if tracker.vertical_spread() > horizontal_travel:
+    if tracker.vertical_spread() > tracker.horizontal_travel():
         return None
     return GestureType.SWIPE_RIGHT if vx > 0 else GestureType.SWIPE_LEFT
 
@@ -295,12 +306,6 @@ class HandLandmarks:
     def __init__(self, landmarks: Sequence, label: str = "Right") -> None:
         self.points = as_array(landmarks)
         self.label = label
-
-    @classmethod
-    def from_mediapipe(cls, hand_landmarks, label: str = "Right") -> "HandLandmarks":
-        """Build from a MediaPipe ``NormalizedLandmarkList`` (legacy solutions API)."""
-        pts = [(lm.x, lm.y, lm.z) for lm in hand_landmarks.landmark]
-        return cls(pts, label=label)
 
     @classmethod
     def from_task_landmarks(cls, landmarks, label: str = "Right") -> "HandLandmarks":
