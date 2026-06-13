@@ -34,6 +34,10 @@ OSASCRIPT_TIMEOUT_S = 5
 DEFAULT_SCREEN_W = 1440
 DEFAULT_SCREEN_H = 900
 
+# Height (pixels) of the macOS menu bar at the top of the screen. Tiling reserves
+# this so tiled windows sit *below* the menu bar instead of underneath it.
+MENU_BAR_HEIGHT = 25
+
 # Minimum window size (pixels) enforced by ``clamp_size`` so a window can't be
 # shrunk into nothing.
 MIN_WINDOW_W = 200
@@ -71,6 +75,20 @@ def clamp_size(
     cw = int(max(min_w, min(max_w, round(w))))
     ch = int(max(min_h, min(max_h, round(h))))
     return cw, ch
+
+
+def visible_frame(
+    screen_w: int, screen_h: int, menubar_h: int = MENU_BAR_HEIGHT
+) -> Tuple[int, int, int, int]:
+    """Usable screen rect ``(x, y, w, h)`` below the macOS menu bar.
+
+    The menu bar occupies the top ``menubar_h`` pixels, so tiled windows should
+    start at ``y = menubar_h`` and be ``menubar_h`` shorter than the full screen.
+    ``menubar_h`` is clamped to ``[0, screen_h]`` so the returned height is never
+    negative.
+    """
+    mb = max(0, min(menubar_h, screen_h))
+    return (0, mb, screen_w, screen_h - mb)
 
 
 def map_normalized_to_screen(
@@ -207,9 +225,11 @@ class OSWindowController:
     """
 
     def __init__(self, screen_w: int = DEFAULT_SCREEN_W,
-                 screen_h: int = DEFAULT_SCREEN_H) -> None:
+                 screen_h: int = DEFAULT_SCREEN_H,
+                 menubar_h: int = MENU_BAR_HEIGHT) -> None:
         self.screen_w = screen_w
         self.screen_h = screen_h
+        self.menubar_h = menubar_h
         self._cycle: List[str] = []
         self._cycle_index: int = -1
         self._prev_front: Optional[str] = None
@@ -325,11 +345,16 @@ class OSWindowController:
 
     # ----- tiling / split ----------------------------------------------
     def _tile(self, label: str, x: int, w: int) -> str:
-        """Move+resize the front window to a full-height pane at ``x`` of width ``w``."""
-        ok, out = self._run(build_set_position_script(x, 0))
+        """Move+resize the front window to a pane at ``x`` of width ``w``.
+
+        The pane spans the visible frame (below the menu bar), not the full
+        screen, so the title bar isn't hidden under the menu bar.
+        """
+        _, vy, _, vh = visible_frame(self.screen_w, self.screen_h, self.menubar_h)
+        ok, out = self._run(build_set_position_script(x, vy))
         if not ok:
             return f"{label} failed: {out}"
-        ok2, out2 = self._run(build_set_size_script(w, self.screen_h))
+        ok2, out2 = self._run(build_set_size_script(w, vh))
         return label if ok2 else f"{label} failed: {out2}"
 
     def tile_left(self) -> str:
@@ -348,9 +373,10 @@ class OSWindowController:
         prev = self._prev_front
         if prev and ok and prev != front:
             half = self.screen_w // 2
+            _, vy, _, vh = visible_frame(self.screen_w, self.screen_h, self.menubar_h)
             self._run(
                 build_set_app_window_bounds_script(
-                    prev, half, 0, self.screen_w - half, self.screen_h
+                    prev, half, vy, self.screen_w - half, vh
                 )
             )
             return f"split: {front} | {prev}"
