@@ -9,9 +9,6 @@ If every item is checked, make no changes and say so.
 
 ## Items
 
-- [ ] **Config validation with clear errors.** Validate `gestures.json` on load:
-  unknown gesture names, unknown action names, out-of-range thresholds → raise/log a
-  clear message instead of silently misbehaving. Unit-test the validator.
 - [ ] **Expand test coverage of glue code.** Add tests for `main.py` helpers
   (`_help_lines`, `_make_render` selection, camera-index resolution) and `ui.py`
   text-panel line wrapping — the currently-thin-on-coverage modules.
@@ -20,6 +17,18 @@ If every item is checked, make no changes and say so.
   reload path to be unit-testable.
 
 ## Done
+
+- [x] **Config validation with clear errors.** Added a pure
+  `validate_config(data, backend) -> list[str]` to `config.py` that returns
+  human-readable problems for unknown gesture names (vs the `GestureType` enum),
+  unknown action names (vs the active backend's default mapping, exposed as
+  `VALID_ACTIONS_OS`/`VALID_ACTIONS_CANVAS`), out-of-range / wrong-type / unknown
+  thresholds (module-level `THRESHOLD_RANGES`), invalid backend, and invalid
+  camera_index. `load_config` now logs each problem as a `WARNING` via
+  `logging.getLogger("config")` and stays non-fatal — bad entries fall back to
+  defaults exactly as before. `config.py` remains free of cv2/mediapipe. Unit-tested
+  in `tests/test_config.py` (clean config → `[]`, each error category, and a
+  `caplog` test that `load_config` warns yet returns a usable `Config`).
 
 - [x] **Multi-display awareness.** Added pure helpers `display_for_point` (containment with
   nearest-center fallback for off-screen windows; `None` on empty list), `clamp_rect_to_frame`

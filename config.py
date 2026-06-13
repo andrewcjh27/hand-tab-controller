@@ -24,9 +24,14 @@ No camera or MediaPipe imports here -- this module is pure and testable.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, List
+
+from gestures import GestureType  # pure import: no cv2/mediapipe
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "gestures.json")
 
@@ -70,6 +75,120 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
     "move_speed": 40,
     "resize_step": 0.1,
 }
+
+
+# Valid gesture names are exactly the GestureType enum values.
+VALID_GESTURES: frozenset[str] = frozenset(g.value for g in GestureType)
+
+# Valid action names per backend = the set of values of that backend's default
+# mapping. Kept explicit so the validation check is obvious and testable.
+VALID_ACTIONS_OS: frozenset[str] = frozenset(DEFAULT_OS_MAPPINGS.values())
+VALID_ACTIONS_CANVAS: frozenset[str] = frozenset(DEFAULT_MAPPINGS.values())
+
+# Sane ranges for each threshold. Each entry: (kind, low, high) where kind is
+# "float" or "int". ``low``/``high`` are inclusive/exclusive per the comment;
+# bounds are encoded as (low_exclusive, low, high, high_inclusive).
+#   (low_exclusive, low_bound, high_bound, high_inclusive)
+# A bound of None means unbounded on that side.
+THRESHOLD_RANGES: Dict[str, tuple] = {
+    # name:            (kind,  low_excl, low,  high, high_incl)
+    "swipe_velocity": ("float", True, 0.0, 1.0, True),  # (0, 1]
+    "pinch_sensitivity": ("float", True, 0.0, 1.0, True),  # (0, 1]
+    "pinch_threshold": ("float", True, 0.0, 1.0, True),  # (0, 1]
+    "smoothing_window": ("int", False, 1, None, False),  # integer >= 1
+    "cooldown_ms": ("float", False, 0, None, False),  # >= 0
+    "move_speed": ("float", True, 0.0, None, False),  # > 0
+    "resize_step": ("float", True, 0.0, 1.0, True),  # (0, 1]
+}
+
+
+def _range_label(low_excl: bool, low, high, high_incl: bool) -> str:
+    """Build a human-readable range label like ``(0, 1]`` or ``>= 1``."""
+    if low is not None and high is not None:
+        lb = "(" if low_excl else "["
+        rb = "]" if high_incl else ")"
+        return f"{lb}{low}, {high}{rb}"
+    if high is None and low is not None:
+        return f"> {low}" if low_excl else f">= {low}"
+    return "valid range"
+
+
+def validate_config(data: dict, backend: str) -> List[str]:
+    """Validate a raw config dict and return a list of problem strings.
+
+    An empty list means the config is clean. This is a pure function with no
+    side effects: it neither logs nor raises. ``backend`` selects which set of
+    action names is considered valid (the active backend's default mapping).
+
+    Detected problems:
+      * unknown gesture names in ``mappings`` keys
+      * unknown action names in ``mappings`` values
+      * out-of-range / wrong-type / unknown ``thresholds``
+      * invalid ``backend`` (not "os"/"canvas")
+      * invalid ``camera_index`` (negative or non-integer)
+    """
+    problems: List[str] = []
+
+    raw_backend = data.get("backend", DEFAULT_BACKEND)
+    if str(raw_backend).lower() not in ("os", "canvas"):
+        problems.append(
+            f"invalid backend {raw_backend!r} (expected 'os' or 'canvas')"
+        )
+
+    if "camera_index" in data:
+        cam = data["camera_index"]
+        if isinstance(cam, bool) or not isinstance(cam, int):
+            problems.append(
+                f"camera_index={cam!r} is not an integer"
+            )
+        elif cam < 0:
+            problems.append(f"camera_index={cam} is negative")
+
+    valid_actions = VALID_ACTIONS_OS if backend == "os" else VALID_ACTIONS_CANVAS
+    mappings = data.get("mappings", {})
+    if isinstance(mappings, dict):
+        for gesture, action in mappings.items():
+            if gesture not in VALID_GESTURES:
+                problems.append(f"unknown gesture {gesture!r} in mappings")
+            if action not in valid_actions:
+                problems.append(
+                    f"unknown action {action!r} for gesture {gesture!r} in mappings"
+                )
+    else:
+        problems.append("'mappings' must be an object")
+
+    thresholds = data.get("thresholds", {})
+    if isinstance(thresholds, dict):
+        for name, value in thresholds.items():
+            spec = THRESHOLD_RANGES.get(name)
+            if spec is None:
+                problems.append(f"unknown threshold {name!r}={value!r}")
+                continue
+            kind, low_excl, low, high, high_incl = spec
+            label = _range_label(low_excl, low, high, high_incl)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                problems.append(
+                    f"threshold {name!r}={value!r} is not a number"
+                )
+                continue
+            if kind == "int" and not isinstance(value, int):
+                problems.append(
+                    f"threshold {name!r}={value!r} must be an integer"
+                )
+                continue
+            ok = True
+            if low is not None:
+                ok = ok and (value > low if low_excl else value >= low)
+            if high is not None:
+                ok = ok and (value <= high if high_incl else value < high)
+            if not ok:
+                problems.append(
+                    f"threshold {name!r}={value} out of range {label}"
+                )
+    else:
+        problems.append("'thresholds' must be an object")
+
+    return problems
 
 
 @dataclass
@@ -117,7 +236,18 @@ def load_config(path: str | None = None) -> Config:
     backend = str(data.get("backend", DEFAULT_BACKEND)).lower()
     if backend not in ("os", "canvas"):
         backend = DEFAULT_BACKEND
-    camera_index = int(data.get("camera_index", DEFAULT_CAMERA_INDEX))
+
+    # Validate against the resolved backend and warn (non-fatal) for any
+    # problems. The app continues with graceful defaults for bad entries.
+    for problem in validate_config(data, backend):
+        logger.warning("config: %s", problem)
+
+    try:
+        camera_index = int(data.get("camera_index", DEFAULT_CAMERA_INDEX))
+        if camera_index < 0:
+            camera_index = DEFAULT_CAMERA_INDEX
+    except (TypeError, ValueError):
+        camera_index = DEFAULT_CAMERA_INDEX
 
     # Pick the base mapping set for the active backend, then overlay any
     # user-supplied mappings so per-gesture overrides still work.
