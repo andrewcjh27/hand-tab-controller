@@ -179,7 +179,7 @@ def is_point(landmarks: np.ndarray) -> bool:
 def is_v_sign(landmarks: np.ndarray) -> bool:
     """True for a "V"/peace sign: index and middle extended, ring and pinky down.
 
-    Used as the default gesture for toggling a double (split) tab view.
+    Used as the default gesture for toggling a split-window layout.
     """
     index = finger_extended(landmarks, INDEX_TIP, INDEX_MCP)
     middle = finger_extended(landmarks, MIDDLE_TIP, MIDDLE_MCP)

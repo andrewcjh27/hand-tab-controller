@@ -24,7 +24,22 @@ Nothing here imports cv2 or mediapipe.
 from __future__ import annotations
 
 import subprocess
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
+
+# Seconds to wait for an ``osascript`` invocation before giving up.
+OSASCRIPT_TIMEOUT_S = 5
+
+# Default assumed screen size (pixels) until ``refresh_screen_size`` queries the
+# real display. Matches a common 1440x900 laptop panel.
+DEFAULT_SCREEN_W = 1440
+DEFAULT_SCREEN_H = 900
+
+# Minimum window size (pixels) enforced by ``clamp_size`` so a window can't be
+# shrunk into nothing.
+MIN_WINDOW_W = 200
+MIN_WINDOW_H = 150
+# Effectively-unbounded maximum used when no screen size is supplied.
+MAX_WINDOW_DIM = 100000
 
 
 # ---------------------------------------------------------------------------
@@ -47,10 +62,10 @@ def prev_index(current: int, count: int) -> int:
 def clamp_size(
     w: float,
     h: float,
-    min_w: int = 200,
-    min_h: int = 150,
-    max_w: int = 100000,
-    max_h: int = 100000,
+    min_w: int = MIN_WINDOW_W,
+    min_h: int = MIN_WINDOW_H,
+    max_w: int = MAX_WINDOW_DIM,
+    max_h: int = MAX_WINDOW_DIM,
 ) -> Tuple[int, int]:
     """Clamp a width/height to sane minimums and the screen maximum."""
     cw = int(max(min_w, min(max_w, round(w))))
@@ -191,7 +206,8 @@ class OSWindowController:
     strings rather than raised, so the camera loop never crashes.
     """
 
-    def __init__(self, screen_w: int = 1440, screen_h: int = 900) -> None:
+    def __init__(self, screen_w: int = DEFAULT_SCREEN_W,
+                 screen_h: int = DEFAULT_SCREEN_H) -> None:
         self.screen_w = screen_w
         self.screen_h = screen_h
         self._cycle: List[str] = []
@@ -207,7 +223,7 @@ class OSWindowController:
                 ["osascript", "-e", script],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=OSASCRIPT_TIMEOUT_S,
             )
         except FileNotFoundError:
             return False, "osascript not found (macOS only)"
@@ -246,29 +262,28 @@ class OSWindowController:
             self._cycle_index = 0
         return front if ok2 else ""
 
-    def next_app(self) -> str:
-        """Bring the next visible app to the front (wraps)."""
+    def _cycle_app(self, step: Callable[[int, int], int], label: str) -> str:
+        """Cycle to an adjacent visible app using ``step`` for the index math."""
         self._prev_front = self._refresh_cycle()
         if not self._cycle:
             return "no apps to cycle"
-        self._cycle_index = next_index(self._cycle_index, len(self._cycle))
+        self._cycle_index = step(self._cycle_index, len(self._cycle))
         name = self._cycle[self._cycle_index]
         ok, out = self._run(build_activate_app_script(name))
-        return f"next_app -> {name}" if ok else f"next_app failed: {out}"
+        return f"{label} -> {name}" if ok else f"{label} failed: {out}"
+
+    def next_app(self) -> str:
+        """Bring the next visible app to the front (wraps)."""
+        return self._cycle_app(next_index, "next_app")
 
     def prev_app(self) -> str:
         """Bring the previous visible app to the front (wraps)."""
-        self._prev_front = self._refresh_cycle()
-        if not self._cycle:
-            return "no apps to cycle"
-        self._cycle_index = prev_index(self._cycle_index, len(self._cycle))
-        name = self._cycle[self._cycle_index]
-        ok, out = self._run(build_activate_app_script(name))
-        return f"prev_app -> {name}" if ok else f"prev_app failed: {out}"
+        return self._cycle_app(prev_index, "prev_app")
 
     # ----- move ---------------------------------------------------------
-    def _front_position(self) -> Optional[Tuple[int, int]]:
-        ok, out = self._run(build_get_position_script())
+    def _query_coords(self, script: str) -> Optional[Tuple[int, int]]:
+        """Run a coord-returning script and parse it, or None on failure."""
+        ok, out = self._run(script)
         if not ok:
             return None
         try:
@@ -276,14 +291,11 @@ class OSWindowController:
         except ValueError:
             return None
 
+    def _front_position(self) -> Optional[Tuple[int, int]]:
+        return self._query_coords(build_get_position_script())
+
     def _front_size(self) -> Optional[Tuple[int, int]]:
-        ok, out = self._run(build_get_size_script())
-        if not ok:
-            return None
-        try:
-            return parse_coords(out)
-        except ValueError:
-            return None
+        return self._query_coords(build_get_size_script())
 
     def set_window_position(self, x: int, y: int) -> str:
         """Set the front window's absolute position."""
@@ -312,23 +324,22 @@ class OSWindowController:
         return self.set_window_size(size[0] * scale, size[1] * scale)
 
     # ----- tiling / split ----------------------------------------------
+    def _tile(self, label: str, x: int, w: int) -> str:
+        """Move+resize the front window to a full-height pane at ``x`` of width ``w``."""
+        ok, out = self._run(build_set_position_script(x, 0))
+        if not ok:
+            return f"{label} failed: {out}"
+        ok2, out2 = self._run(build_set_size_script(w, self.screen_h))
+        return label if ok2 else f"{label} failed: {out2}"
+
     def tile_left(self) -> str:
         """Tile the front window to the left half of the main screen."""
-        half = self.screen_w // 2
-        ok, out = self._run(build_set_position_script(0, 0))
-        if not ok:
-            return f"tile_left failed: {out}"
-        ok2, out2 = self._run(build_set_size_script(half, self.screen_h))
-        return "tile_left" if ok2 else f"tile_left failed: {out2}"
+        return self._tile("tile_left", 0, self.screen_w // 2)
 
     def tile_right(self) -> str:
         """Tile the front window to the right half of the main screen."""
         half = self.screen_w // 2
-        ok, out = self._run(build_set_position_script(half, 0))
-        if not ok:
-            return f"tile_right failed: {out}"
-        ok2, out2 = self._run(build_set_size_script(self.screen_w - half, self.screen_h))
-        return "tile_right" if ok2 else f"tile_right failed: {out2}"
+        return self._tile("tile_right", half, self.screen_w - half)
 
     def toggle_split(self) -> str:
         """Tile the front window left and the previously-front app right."""
