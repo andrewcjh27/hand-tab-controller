@@ -140,3 +140,19 @@ def test_overlay_prompt_preserves_frame_shape():
 
 def test_overlay_prompt_none_frame_returns_none():
     assert ui.overlay_prompt(None, "title") is None
+
+
+@cv2_required
+def test_overlay_training_banner_and_complete():
+    import numpy as _np
+
+    canvas = _np.zeros((300, 420, 3), dtype=_np.uint8)
+    out = ui.overlay_training(canvas, "Swipe right", "Move right", "next tab",
+                              reps_done=2, reps_total=5, step_index=1, step_total=9)
+    assert out is not None and out.shape == canvas.shape
+    done = ui.overlay_training(canvas, "", "", "", 0, 0, 0, 0, complete=True)
+    assert done is not None and done.shape == canvas.shape
+
+
+def test_overlay_training_none_canvas_returns_none():
+    assert ui.overlay_training(None, "x", "y", "z", 0, 1, 1, 1) is None

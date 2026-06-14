@@ -218,6 +218,41 @@ def overlay_prompt(frame, title: str, subtitle: str = ""):
     return mirrored
 
 
+def overlay_training(canvas, label: str, instruction: str, effect: str,
+                     reps_done: int, reps_total: int,
+                     step_index: int, step_total: int, complete: bool = False):
+    """Draw the training banner on top of the workspace canvas.
+
+    Shows the current movement, what to do, what it does to the tabs, and rep
+    progress — so the user connects each gesture to its on-screen effect.
+    """
+    if not CV2_AVAILABLE or canvas is None:
+        return canvas
+    w = canvas.shape[1]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    _draw_translucent_rect(canvas, (0, 0), (w, 96), 0.78)
+    if complete:
+        cv2.putText(canvas, "Training complete - thresholds saved", (16, 40),
+                    font, 0.7, ACCENT, 2, cv2.LINE_AA)
+        cv2.putText(canvas, "Press q to exit", (16, 70), font, 0.5, MUTED, 1, cv2.LINE_AA)
+        return canvas
+    cv2.putText(canvas, f"Step {step_index}/{step_total}:  {label}", (16, 30),
+                font, 0.7, TEXT, 2, cv2.LINE_AA)
+    cv2.putText(canvas, instruction, (16, 56), font, 0.5, TEXT, 1, cv2.LINE_AA)
+    cv2.putText(canvas, f"-> {effect}", (16, 78), font, 0.5, ACCENT, 1, cv2.LINE_AA)
+    # Rep progress dots on the right.
+    dot_r, gap = 7, 22
+    x0 = w - reps_total * gap - 16
+    for i in range(reps_total):
+        cx = x0 + i * gap
+        filled = i < reps_done
+        cv2.circle(canvas, (cx, 30), dot_r, ACCENT if filled else MUTED,
+                   -1 if filled else 1, cv2.LINE_AA)
+    cv2.putText(canvas, f"{reps_done}/{reps_total}", (x0, 58), font, 0.5, MUTED, 1, cv2.LINE_AA)
+    cv2.putText(canvas, "s: skip   q: quit", (w - 170, 80), font, 0.45, MUTED, 1, cv2.LINE_AA)
+    return canvas
+
+
 def overlay_camera(canvas, frame, scale: float = 0.25):
     """Mirror the camera frame and paste it into the canvas top-right corner."""
     if not CV2_AVAILABLE or canvas is None or frame is None:

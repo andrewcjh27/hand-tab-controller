@@ -100,6 +100,22 @@ fist, open your hand — measures your actual motion, and writes tuned
 abort without saving. Re-run anytime it feels too sensitive or not responsive
 enough.
 
+### Interactive trainer (`--train`)
+
+For a fuller, hands-on session that teaches every movement and lets you *see each
+one act on the tabs*:
+
+```bash
+.venv/bin/python main.py --train
+```
+
+It steps through all nine gestures one at a time on a demo tab workspace. Each
+step shows what to do and what it does (next/previous tab, grow/shrink, drag,
+split), asks for several reps, and fills in the progress dots as it recognizes
+you — so you build muscle memory while watching the effect. `s` skips a step,
+`q` quits. Calibration samples are gathered as you train, and tuned thresholds
+are saved at the end. This is the recommended way to get comfortable.
+
 ## Gestures → window actions (OS mode)
 
 | Gesture            | Type             | Action          | What it does                                         |

@@ -31,6 +31,7 @@ from actions import ActionRouter, OSActionRouter
 from os_control import OSWindowController
 from workspace import Workspace
 import calibration
+import training
 import ui
 
 _MISSING = []
@@ -337,6 +338,97 @@ def calibrate(cli_camera: int | None = None) -> int:
     return 0
 
 
+def train(cli_camera: int | None = None) -> int:
+    """Interactive trainer: practice each gesture while it acts on demo tabs.
+
+    Uses the canvas workspace so every gesture has a visible effect (tab switch,
+    resize, drag, split). Counts reps per movement, collects calibration samples
+    along the way, and saves tuned thresholds at the end.
+    """
+    if _MISSING:
+        print("Missing required packages: " + ", ".join(_MISSING)
+              + "\nInstall them with:\n    pip install -r requirements.txt",
+              file=sys.stderr)
+        return 1
+    config = load_config()
+    cam_index = resolve_camera_index(config.camera_index, cli_camera)
+    cap, err = _preflight(cam_index)
+    if cap is None:
+        return err
+
+    workspace = build_workspace()
+    router = ActionRouter(workspace, config)  # canvas backend -> visible effects
+    recognizer = GestureRecognizer({
+        "swipe_velocity": config.threshold("swipe_velocity"),
+        "pinch_sensitivity": config.threshold("pinch_sensitivity"),
+        "pinch_threshold": config.threshold("pinch_threshold"),
+        "smoothing_window": int(config.threshold("smoothing_window")),
+    })
+    tracker = training.TrainingTracker()
+    window = int(config.threshold("smoothing_window"))
+
+    # Per-sample collectors, dispatched by the current step's `sample` tag.
+    swipe_cb, swipe_peaks = _collect_swipe_peaks(window)
+    motion_cb, pinch_deltas = _collect_pinch_deltas()
+    open_cb, pinch_open = _collect_pinch_distances()
+    closed_cb, pinch_closed = _collect_pinch_distances()
+    collectors = {"swipe": swipe_cb, "pinch_motion": motion_cb,
+                  "pinch_open": open_cb, "pinch_closed": closed_cb}
+
+    print("Training: perform each movement; s skips a step, q quits.")
+    with mp_vision.HandLandmarker.create_from_options(_landmarker_options()) as lm:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
+                                                  data=rgb), int(time.monotonic() * 1000))
+            detected, points = _detect_hands(result)
+            events = recognizer.update(detected)
+            router.handle_all(events)  # tabs visibly react
+
+            step = tracker.current
+            if step is not None and step.sample and detected:
+                collectors[step.sample](detected, 0.0)
+            for g in events:
+                tracker.record(g.type.value)
+
+            canvas = ui.render_workspace(workspace)
+            ui.draw_landmarks(frame, points)
+            canvas = ui.overlay_camera(canvas, frame)
+            if tracker.is_complete:
+                canvas = ui.overlay_training(canvas, "", "", "", 0, 0, 0, 0, complete=True)
+            else:
+                si, st, rd, rt = tracker.progress()
+                canvas = ui.overlay_training(canvas, step.label, step.instruction,
+                                             step.effect, rd, rt, si, st)
+            if canvas is not None:
+                cv2.imshow("Hand Gesture Controller - Training", canvas)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            if key == ord("s"):
+                tracker.skip()
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    measured = {
+        "swipe_velocity": calibration.recommend_swipe_velocity(swipe_peaks),
+        "pinch_sensitivity": calibration.recommend_pinch_sensitivity(pinch_deltas),
+        "pinch_threshold": calibration.recommend_pinch_threshold(pinch_closed, pinch_open),
+    }
+    path = save_thresholds(calibration.merge_thresholds(config.thresholds, measured))
+    done = "complete" if tracker.is_complete else "ended early"
+    print(f"Training {done}. Saved thresholds to {path}")
+    for key in ("swipe_velocity", "pinch_sensitivity", "pinch_threshold"):
+        got = measured.get(key)
+        print(f"  {key:<18} {got if got is not None else '(unchanged)'}")
+    return 0
+
+
 def run(argv: list[str] | None = None) -> int:
     """Run the live pipeline. Returns a process exit code."""
     parser = argparse.ArgumentParser(description="Hand-gesture window controller")
@@ -349,6 +441,10 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibrate", action="store_true",
                         help="Run guided gesture calibration and save tuned "
                              "thresholds to gestures.json, then exit.")
+    parser.add_argument("--train", action="store_true",
+                        help="Interactive trainer: practice each movement and "
+                             "watch it act on the demo tabs; saves tuned "
+                             "thresholds at the end.")
     args = parser.parse_args(argv)
 
     if args.list_cameras:
@@ -356,6 +452,9 @@ def run(argv: list[str] | None = None) -> int:
 
     if args.calibrate:
         return calibrate(args.camera)
+
+    if args.train:
+        return train(args.camera)
 
     if _MISSING:
         print(
