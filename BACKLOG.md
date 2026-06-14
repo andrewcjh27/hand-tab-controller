@@ -9,14 +9,22 @@ If every item is checked, make no changes and say so.
 
 ## Items
 
-- [ ] **Expand test coverage of glue code.** Add tests for `main.py` helpers
-  (`_help_lines`, `_make_render` selection, camera-index resolution) and `ui.py`
-  text-panel line wrapping — the currently-thin-on-coverage modules.
 - [ ] **Live gesture-mapping reload.** A keypress in the OpenCV window (e.g. `r`)
   reloads `gestures.json` without restarting, so remapping is instant. Factor the
   reload path to be unit-testable.
 
 ## Done
+
+- [x] **Expand test coverage of glue code.** Added `tests/test_main.py` (covers
+  `main._help_lines` header/backend + one-line-per-mapping, `main._make_render`
+  canvas-vs-os path selection via monkeypatched `ui` drawing fns, `build_workspace`,
+  and `config.resolve_camera_index` override/fallback cases) and `tests/test_ui.py`
+  (extracted a pure `ui.wrap_lines(lines, max_chars)` word-wrap helper — short
+  passthrough, word-boundary wrap, hard-break of overlong tokens, empty-line/empty-
+  input handling, wrap-disabled — plus `overlay_text_panel` drawing tests guarded by
+  cv2/numpy availability). `overlay_text_panel` gained an optional `max_chars`
+  parameter (default 0 = unchanged behavior) that wires in the new helper. 21 tests
+  added; all 119 pass.
 
 - [x] **Config validation with clear errors.** Added a pure
   `validate_config(data, backend) -> list[str]` to `config.py` that returns

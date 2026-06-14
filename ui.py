@@ -81,17 +81,56 @@ def draw_landmarks(frame, hands_points: List, color=ACCENT):
     return frame
 
 
-def overlay_text_panel(frame, lines: List[str]):
+def wrap_lines(lines: Sequence[str], max_chars: int) -> List[str]:
+    """Word-wrap each input line to at most ``max_chars`` characters.
+
+    Pure helper (no cv2/numpy). Words longer than ``max_chars`` are hard-broken
+    so a single long token never overflows the panel. Empty strings are
+    preserved as empty lines. A non-positive ``max_chars`` disables wrapping and
+    returns the input lines unchanged.
+    """
+    if max_chars <= 0:
+        return list(lines)
+    wrapped: List[str] = []
+    for line in lines:
+        if line == "":
+            wrapped.append("")
+            continue
+        cur = ""
+        for word in line.split(" "):
+            # Hard-break any word that is itself wider than the limit.
+            while len(word) > max_chars:
+                if cur:
+                    wrapped.append(cur)
+                    cur = ""
+                wrapped.append(word[:max_chars])
+                word = word[max_chars:]
+            if not cur:
+                cur = word
+            elif len(cur) + 1 + len(word) <= max_chars:
+                cur = f"{cur} {word}"
+            else:
+                wrapped.append(cur)
+                cur = word
+        wrapped.append(cur)
+    return wrapped
+
+
+def overlay_text_panel(frame, lines: List[str], max_chars: int = 0):
     """Draw a semi-transparent help/log panel over a (mirrored) camera frame.
 
     Used in OS window-control mode where there is no tab canvas — the user sees
     the camera feed plus what gesture/action fired. Returns the frame (or None).
+
+    ``max_chars`` optionally word-wraps long lines (see :func:`wrap_lines`); the
+    default of 0 preserves the original one-line-per-entry behavior.
     """
     if not CV2_AVAILABLE or frame is None:
         return frame
     mirrored = cv2.flip(frame, 1)
     if not lines:
         return mirrored
+    lines = wrap_lines(lines, max_chars)
     h, w = mirrored.shape[:2]
     panel_h = 22 * len(lines) + 16
     overlay = mirrored.copy()
