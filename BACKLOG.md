@@ -9,11 +9,21 @@ If every item is checked, make no changes and say so.
 
 ## Items
 
-- [ ] **Live gesture-mapping reload.** A keypress in the OpenCV window (e.g. `r`)
-  reloads `gestures.json` without restarting, so remapping is instant. Factor the
-  reload path to be unit-testable.
-
 ## Done
+
+- [x] **Live gesture-mapping reload.** Pressing `r` in the OpenCV window reloads
+  `gestures.json` without restarting via a testable `main.reload_config(recognizer,
+  router) -> (config, help_lines)` helper that calls `load_config()`, pushes fresh
+  thresholds onto the recognizer through a new `GestureRecognizer.apply_thresholds`
+  (resetting per-hand `_trackers`/`_pinch_wins` when `smoothing_window` changes),
+  swaps the router's config via a new `_BaseRouter.set_config` (refreshes mappings +
+  cooldown, clears `_last_fire`, keeps `log`), and returns rebuilt `help_lines`. The
+  `run()` loop rebinds `config`/`help_lines`/`render` on `r` and the controls hint
+  now mentions `r reload`. Unit-tested in `tests/test_gestures.py` (apply_thresholds
+  updates values, missing keys keep current, window change clears trackers),
+  `tests/test_workspace.py` (set_config swaps mapping/cooldown, keeps log), and
+  `tests/test_main.py` (reload_config with fake and real recognizer+router via a
+  monkeypatched `load_config`). 9 tests added; all 163 pass.
 
 - [x] **Expand test coverage of glue code.** Added `tests/test_main.py` (covers
   `main._help_lines` header/backend + one-line-per-mapping, `main._make_render`

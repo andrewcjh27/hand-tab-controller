@@ -396,6 +396,27 @@ class GestureRecognizer:
         self._trackers: dict[str, VelocityTracker] = {}
         self._pinch_wins: dict[str, Deque[float]] = {}
 
+    def apply_thresholds(self, cfg: dict) -> None:
+        """Update thresholds from ``cfg`` (same keys/semantics as ``__init__``).
+
+        Reads ``swipe_velocity``, ``pinch_sensitivity``, ``pinch_threshold`` and
+        ``smoothing_window`` from ``cfg``, falling back to the current value for
+        any missing key. If ``smoothing_window`` changes, the per-hand state
+        (``_trackers`` and ``_pinch_wins``) is cleared so stale buffers sized to
+        the old window don't linger. Camera-free / unit-testable.
+        """
+        cfg = cfg or {}
+        self.swipe_velocity = float(cfg.get("swipe_velocity", self.swipe_velocity))
+        self.pinch_sensitivity = float(
+            cfg.get("pinch_sensitivity", self.pinch_sensitivity)
+        )
+        self.pinch_threshold = float(cfg.get("pinch_threshold", self.pinch_threshold))
+        new_window = int(cfg.get("smoothing_window", self.window))
+        if new_window != self.window:
+            self.window = new_window
+            self._trackers.clear()
+            self._pinch_wins.clear()
+
     def _tracker(self, label: str) -> VelocityTracker:
         if label not in self._trackers:
             self._trackers[label] = VelocityTracker(window=self.window)

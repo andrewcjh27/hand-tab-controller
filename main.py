@@ -54,10 +54,32 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
 
 
 def _help_lines(config) -> list[str]:
-    lines = [f"Backend: {config.backend}  (q to quit)"]
+    lines = [f"Backend: {config.backend}  (q quit, h help, r reload)"]
     for gesture, action in config.mappings.items():
         lines.append(f"  {gesture:<16} -> {action}")
     return lines
+
+
+def reload_config(recognizer, router) -> tuple:
+    """Reload gestures.json and apply it to a live recognizer + router.
+
+    Calls :func:`config.load_config`, pushes the fresh thresholds onto
+    ``recognizer`` via :meth:`gestures.GestureRecognizer.apply_thresholds`, swaps
+    the router's config via ``router.set_config`` (so new mappings / cooldown take
+    effect), and returns ``(config, help_lines)`` so the caller can refresh its
+    own state. Camera-free and unit-testable.
+    """
+    config = load_config()
+    recognizer.apply_thresholds(
+        {
+            "swipe_velocity": config.threshold("swipe_velocity"),
+            "pinch_sensitivity": config.threshold("pinch_sensitivity"),
+            "pinch_threshold": config.threshold("pinch_threshold"),
+            "smoothing_window": int(config.threshold("smoothing_window")),
+        }
+    )
+    router.set_config(config)
+    return config, _help_lines(config)
 
 
 def build_workspace() -> Workspace:
@@ -500,7 +522,7 @@ def run(argv: list[str] | None = None) -> int:
     if cap is None:
         return err
 
-    print("Controls:  q quit   h toggle help")
+    print("Controls:  q quit   h toggle help   r reload")
     show_help = False
     with mp_vision.HandLandmarker.create_from_options(_landmarker_options()) as landmarker:
         while True:
@@ -526,6 +548,10 @@ def run(argv: list[str] | None = None) -> int:
                 break
             if key == ord("h"):
                 show_help = not show_help
+            if key == ord("r"):
+                config, help_lines = reload_config(recognizer, router)
+                render = _make_render(config, workspace, router, help_lines)
+                print("Config reloaded from gestures.json.")
 
     cap.release()
     cv2.destroyAllWindows()
