@@ -100,3 +100,43 @@ def test_overlay_text_panel_wraps_when_max_chars_set():
 def test_overlay_text_panel_none_frame_returns_none():
     # No frame and/or no cv2 -> graceful passthrough of the input.
     assert ui.overlay_text_panel(None, ["a"]) is None
+
+
+# ----- overlay_minimal / overlay_prompt: minimal HUD ------------------------
+
+
+@cv2_required
+def test_overlay_minimal_preserves_frame_shape():
+    import numpy as _np
+
+    frame = _np.zeros((240, 320, 3), dtype=_np.uint8)
+    out = ui.overlay_minimal(frame, status="Swipe left", action="prev_app")
+    assert out is not None and out.shape == frame.shape
+
+
+@cv2_required
+def test_overlay_minimal_help_panel_and_no_status():
+    import numpy as _np
+
+    frame = _np.zeros((240, 320, 3), dtype=_np.uint8)
+    # show_help draws the mapping list; status=None should still render fine.
+    out = ui.overlay_minimal(frame, status=None, show_help=True,
+                             help_lines=["A -> b", "C -> d"], max_chars=20)
+    assert out is not None and out.shape == frame.shape
+
+
+def test_overlay_minimal_none_frame_returns_none():
+    assert ui.overlay_minimal(None, status="x") is None
+
+
+@cv2_required
+def test_overlay_prompt_preserves_frame_shape():
+    import numpy as _np
+
+    frame = _np.zeros((240, 320, 3), dtype=_np.uint8)
+    out = ui.overlay_prompt(frame, "Make a FIST and hold", "4s")
+    assert out is not None and out.shape == frame.shape
+
+
+def test_overlay_prompt_none_frame_returns_none():
+    assert ui.overlay_prompt(None, "title") is None

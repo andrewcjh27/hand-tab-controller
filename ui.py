@@ -30,6 +30,7 @@ TAB = (70, 70, 78)
 TAB_ACTIVE = (40, 140, 240)
 TEXT = (235, 235, 235)
 ACCENT = (0, 200, 120)
+MUTED = (150, 150, 158)
 
 
 def blank_canvas(width: int, height: int):
@@ -71,14 +72,70 @@ def render_workspace(workspace: Workspace, help_lines: Optional[Sequence[str]] =
 
 
 def draw_landmarks(frame, hands_points: List, color=ACCENT):
-    """Draw simple landmark dots for each hand onto a camera frame."""
+    """Draw minimal landmark dots for each hand onto a camera frame.
+
+    Kept deliberately sparse (small dots, single accent color) for a clean look.
+    """
     if not CV2_AVAILABLE:
         return frame
     h, w = frame.shape[:2]
     for pts in hands_points:
         for (x, y) in pts:
-            cv2.circle(frame, (int(x * w), int(y * h)), 3, color, -1)
+            cv2.circle(frame, (int(x * w), int(y * h)), 2, color, -1, cv2.LINE_AA)
     return frame
+
+
+def _draw_translucent_rect(img, pt1, pt2, alpha: float, color=BG) -> None:
+    """Blend a filled rectangle over ``img`` in place at the given opacity."""
+    overlay = img.copy()
+    cv2.rectangle(overlay, pt1, pt2, color, thickness=-1)
+    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+
+
+def overlay_minimal(
+    frame,
+    status: Optional[str] = None,
+    action: Optional[str] = None,
+    hint: str = "h: help",
+    show_help: bool = False,
+    help_lines: Optional[Sequence[str]] = None,
+    max_chars: int = 0,
+):
+    """Minimal HUD over a (mirrored) camera frame.
+
+    A single thin translucent bar at the bottom shows the current detected
+    gesture on the left and the most recent action (accent-colored) on the right;
+    a faint hint sits top-right. Pressing the help key reveals the full mapping
+    list in a translucent top panel. Returns the mirrored frame (or ``None``).
+    """
+    if not CV2_AVAILABLE or frame is None:
+        return frame
+    mirrored = cv2.flip(frame, 1)
+    h, w = mirrored.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    # Bottom status bar.
+    bar_h = 46
+    _draw_translucent_rect(mirrored, (0, h - bar_h), (w, h), 0.55)
+    label = status if status else "-"
+    cv2.putText(mirrored, label, (16, h - 16), font, 0.72, TEXT, 2, cv2.LINE_AA)
+    if action:
+        (tw, _), _ = cv2.getTextSize(action, font, 0.6, 1)
+        cv2.putText(mirrored, action, (w - tw - 16, h - 16), font, 0.6, ACCENT, 1, cv2.LINE_AA)
+
+    if show_help and help_lines:
+        lines = wrap_lines(help_lines, max_chars)
+        panel_h = 22 * len(lines) + 16
+        _draw_translucent_rect(mirrored, (0, 0), (w, panel_h), 0.7)
+        y = 24
+        for line in lines:
+            cv2.putText(mirrored, line, (12, y), font, 0.5, TEXT, 1, cv2.LINE_AA)
+            y += 22
+    elif hint:
+        (hw, _), _ = cv2.getTextSize(hint, font, 0.45, 1)
+        cv2.putText(mirrored, hint, (w - hw - 12, 22), font, 0.45, MUTED, 1, cv2.LINE_AA)
+
+    return mirrored
 
 
 def wrap_lines(lines: Sequence[str], max_chars: int) -> List[str]:
@@ -141,6 +198,23 @@ def overlay_text_panel(frame, lines: List[str], max_chars: int = 0):
         cv2.putText(mirrored, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX,
                     0.5, TEXT, 1, cv2.LINE_AA)
         y += 22
+    return mirrored
+
+
+def overlay_prompt(frame, title: str, subtitle: str = ""):
+    """Centered instruction overlay (used during calibration) on a mirrored frame."""
+    if not CV2_AVAILABLE or frame is None:
+        return frame
+    mirrored = cv2.flip(frame, 1)
+    h, w = mirrored.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    _draw_translucent_rect(mirrored, (0, h // 2 - 52), (w, h // 2 + 44), 0.6)
+    (tw, _), _ = cv2.getTextSize(title, font, 0.9, 2)
+    cv2.putText(mirrored, title, ((w - tw) // 2, h // 2), font, 0.9, TEXT, 2, cv2.LINE_AA)
+    if subtitle:
+        (sw, _), _ = cv2.getTextSize(subtitle, font, 0.55, 1)
+        cv2.putText(mirrored, subtitle, ((w - sw) // 2, h // 2 + 30), font,
+                    0.55, MUTED, 1, cv2.LINE_AA)
     return mirrored
 
 

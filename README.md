@@ -75,9 +75,30 @@ A valid `--camera` flag overrides `camera_index` in the config.
 .venv/bin/python main.py --backend canvas   # in-app demo, no Accessibility needed
 ```
 
-Press `q` to quit. The OpenCV window shows the mirrored camera feed with
-hand-landmark dots and a text panel listing the gesture mappings and the most
-recent fired actions, so you can see what was detected and what happened.
+The OpenCV window shows the mirrored camera feed with subtle hand-landmark dots
+and a **minimal HUD**: a thin bottom bar with the current detected gesture on the
+left and the most recent action on the right. It stays out of the way.
+
+Controls:
+
+- **`q`** — quit
+- **`h`** — toggle the full gesture→action mapping list (hidden by default)
+
+## Calibrate to your hand (recommended)
+
+Default sensitivity is intentionally low so gestures don't fire on incidental
+motion. For the best fit, calibrate to your own movements:
+
+```bash
+.venv/bin/python main.py --calibrate
+```
+
+It walks you through a few prompts — swipe left/right, pinch & spread, make a
+fist, open your hand — measures your actual motion, and writes tuned
+`swipe_velocity`, `pinch_sensitivity`, and `pinch_threshold` values into
+`gestures.json` (other settings are preserved). Press `q` during calibration to
+abort without saving. Re-run anytime it feels too sensitive or not responsive
+enough.
 
 ## Gestures → window actions (OS mode)
 

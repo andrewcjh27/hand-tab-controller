@@ -14,9 +14,34 @@ from config import (
     VALID_GESTURES,
     Config,
     load_config,
+    save_thresholds,
     validate_config,
 )
 from gestures import GestureType
+
+
+def test_save_thresholds_preserves_other_sections(tmp_path):
+    path = tmp_path / "gestures.json"
+    path.write_text(json.dumps({
+        "backend": "canvas",
+        "camera_index": 2,
+        "mappings": {"SWIPE_LEFT": "prev_tab"},
+        "thresholds": {"swipe_velocity": 0.04},
+    }))
+    save_thresholds({"swipe_velocity": 0.12, "cooldown_ms": 800}, path=str(path))
+    data = json.loads(path.read_text())
+    assert data["thresholds"] == {"swipe_velocity": 0.12, "cooldown_ms": 800}
+    assert data["backend"] == "canvas"
+    assert data["camera_index"] == 2
+    assert data["mappings"] == {"SWIPE_LEFT": "prev_tab"}
+
+
+def test_save_thresholds_creates_file_with_defaults(tmp_path):
+    path = tmp_path / "new.json"
+    save_thresholds({"swipe_velocity": 0.1}, path=str(path))
+    data = json.loads(path.read_text())
+    assert data["thresholds"] == {"swipe_velocity": 0.1}
+    assert "backend" in data and "mappings" in data
 
 
 def _clean_os_data():
