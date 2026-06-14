@@ -38,6 +38,21 @@ def test_pinch_sensitivity_none_when_no_motion():
     assert cal.recommend_pinch_sensitivity([]) is None
 
 
+def test_pinch_sensitivity_floored_above_swipe_noise():
+    # Deliberate pinch deltas are small (would give 0.05), but swipe jitter
+    # peaked at 0.12 -> threshold is floored above the jitter so swiping can't
+    # trip a false zoom.
+    got = cal.recommend_pinch_sensitivity([0.1, 0.1], fraction=0.5,
+                                          noise_deltas=[0.05, 0.12, 0.0, None])
+    assert got == 0.12
+
+
+def test_pinch_sensitivity_noise_ignored_when_empty():
+    # Empty/zero noise leaves the normal floor behavior intact.
+    got = cal.recommend_pinch_sensitivity([0.2, 0.4], fraction=0.5, noise_deltas=[0.0])
+    assert got == 0.15
+
+
 def test_pinch_threshold_between_clusters():
     # closed median 0.2, open median 0.8, bias 0.5 -> 0.5
     assert cal.recommend_pinch_threshold([0.18, 0.2, 0.22], [0.78, 0.8, 0.82]) == 0.5

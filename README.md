@@ -118,6 +118,19 @@ App cycling covers visible, non-background application processes. The hand
 centroid (normalized) is mapped to absolute screen coordinates (mirrored in x)
 so the window follows your hand during a drag.
 
+### Swipe vs. zoom
+
+Only one gesture fires per frame, decided by how the whole hand moves:
+
+- **Swipe** — *move your whole hand* across the frame (open palm). A translating
+  hand is always read as a swipe, never a zoom.
+- **Zoom (pinch/spread)** — *hold your hand roughly still* and change the
+  thumb-index distance. A stationary hand with moving fingers is a zoom.
+
+Motion that's neither clearly moving nor clearly still does nothing, on purpose.
+If swipes and zooms still get confused, run `--calibrate` — it now measures the
+finger jitter during your swipes and sets the zoom threshold just above it.
+
 ### Canvas (demo) mode
 
 `--backend canvas` (or `"backend": "canvas"` in `gestures.json`) keeps the

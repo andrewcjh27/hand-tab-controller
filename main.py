@@ -289,17 +289,27 @@ def calibrate(cli_camera: int | None = None) -> int:
     window = int(config.threshold("smoothing_window"))
     aborted = False
     with mp_vision.HandLandmarker.create_from_options(_landmarker_options()) as lm:
+        # During the swipe step, also record the pinch jitter so the zoom
+        # threshold can be floored above it (swipe -> false zoom fix).
         swipe_cb, peaks = _collect_swipe_peaks(window)
-        if not _capture(cap, lm, "Swipe LEFT and RIGHT a few times", 6.0, swipe_cb):
+        noise_cb, swipe_noise = _collect_pinch_deltas()
+
+        def swipe_frame(hands, dt):
+            swipe_cb(hands, dt)
+            noise_cb(hands, dt)
+
+        if not _capture(cap, lm, "Swipe LEFT and RIGHT a few times", 6.0, swipe_frame):
             aborted = True
         if not aborted:
             measured["swipe_velocity"] = calibration.recommend_swipe_velocity(peaks)
 
             pinch_cb, deltas = _collect_pinch_deltas()
-            if not _capture(cap, lm, "Pinch and SPREAD repeatedly", 6.0, pinch_cb):
+            if not _capture(cap, lm, "Hold your hand STILL; pinch and spread", 6.0, pinch_cb):
                 aborted = True
         if not aborted:
-            measured["pinch_sensitivity"] = calibration.recommend_pinch_sensitivity(deltas)
+            measured["pinch_sensitivity"] = calibration.recommend_pinch_sensitivity(
+                deltas, noise_deltas=swipe_noise
+            )
 
             fist_cb, closed = _collect_pinch_distances()
             if not _capture(cap, lm, "Make a FIST and hold", 4.0, fist_cb):

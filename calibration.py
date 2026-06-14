@@ -51,20 +51,30 @@ def recommend_swipe_velocity(
 
 
 def recommend_pinch_sensitivity(
-    frame_deltas: Sequence[Optional[float]], fraction: float = 0.5
+    frame_deltas: Sequence[Optional[float]],
+    fraction: float = 0.5,
+    noise_deltas: Optional[Sequence[Optional[float]]] = None,
 ) -> Optional[float]:
     """Min per-frame pinch-distance change to register a PINCH/SPREAD.
 
     Derived from the absolute frame-to-frame pinch-distance changes observed
     while the user deliberately pinches and spreads. Zero/None deltas (a still
     hand) are ignored. Returns ``None`` when there are no usable samples.
+
+    ``noise_deltas`` are the pinch-distance changes seen while the user was
+    *swiping* (fingers wobbling, not deliberately pinching). When supplied, the
+    threshold is floored just above that jitter so swiping no longer trips a
+    false zoom — the main swipe/zoom confusion fix on the calibration side.
     """
     deltas = [abs(d) for d in _clean(frame_deltas) if d != 0]
     if not deltas:
         return None
-    return round(
-        _clamp(median(deltas) * fraction, PINCH_SENSITIVITY_FLOOR, PINCH_SENSITIVITY_CAP), 4
-    )
+    floor = PINCH_SENSITIVITY_FLOOR
+    if noise_deltas:
+        noise = [abs(d) for d in _clean(noise_deltas) if d != 0]
+        if noise:
+            floor = max(floor, max(noise))
+    return round(_clamp(median(deltas) * fraction, floor, PINCH_SENSITIVITY_CAP), 4)
 
 
 def recommend_pinch_threshold(

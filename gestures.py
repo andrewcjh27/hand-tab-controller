@@ -252,6 +252,18 @@ class VelocityTracker:
             return 0.0
         return abs(self._ys[-1] - self._ys[0])
 
+    def total_speed(self) -> float:
+        """Overall palm speed: net displacement magnitude per frame over window.
+
+        Used to tell a *translating* hand (a swipe) from a *stationary* hand
+        whose fingers are moving (a pinch/zoom).
+        """
+        if len(self._xs) < 2:
+            return 0.0
+        dx = self._xs[-1] - self._xs[0]
+        dy = self._ys[-1] - self._ys[0]
+        return ((dx * dx + dy * dy) ** 0.5) / (len(self._xs) - 1)
+
 
 def detect_swipe(
     tracker: VelocityTracker, velocity_threshold: float
@@ -267,6 +279,38 @@ def detect_swipe(
     if tracker.vertical_spread() > tracker.horizontal_travel():
         return None
     return GestureType.SWIPE_RIGHT if vx > 0 else GestureType.SWIPE_LEFT
+
+
+def arbitrate_dynamic(
+    horizontal_velocity: float,
+    palm_speed: float,
+    pinch_net: float,
+    swipe_velocity: float,
+    pinch_sensitivity: float,
+    horizontal_travel: float,
+    vertical_travel: float,
+    still_factor: float = 0.6,
+) -> Optional[GestureType]:
+    """Pick at most one *dynamic* gesture: SWIPE vs PINCH/SPREAD, never both.
+
+    The two are separated by how the whole hand moves, which is what stops a
+    swipe from also registering as a zoom (and vice versa):
+
+    * **Swipe** — the palm is *translating* (``palm_speed >= swipe_velocity``),
+      mostly horizontally (horizontal travel dominates vertical).
+    * **Zoom** — the palm is roughly *stationary*
+      (``palm_speed <= swipe_velocity * still_factor``) while the thumb-index
+      distance changes by at least ``pinch_sensitivity`` over the window.
+
+    Motion that is neither clearly translating nor clearly still (the ambiguous
+    middle band) returns ``None`` so nothing fires by accident.
+    """
+    if abs(horizontal_velocity) >= swipe_velocity and palm_speed >= swipe_velocity:
+        if vertical_travel <= horizontal_travel:
+            return GestureType.SWIPE_RIGHT if horizontal_velocity > 0 else GestureType.SWIPE_LEFT
+    if palm_speed <= swipe_velocity * still_factor and abs(pinch_net) >= pinch_sensitivity:
+        return GestureType.SPREAD if pinch_net > 0 else GestureType.PINCH
+    return None
 
 
 def classify_pinch_change(
@@ -350,12 +394,17 @@ class GestureRecognizer:
         self.pinch_threshold = float(cfg.get("pinch_threshold", 0.4))
         self.window = int(cfg.get("smoothing_window", 5))
         self._trackers: dict[str, VelocityTracker] = {}
-        self._prev_pinch: dict[str, Optional[float]] = {}
+        self._pinch_wins: dict[str, Deque[float]] = {}
 
     def _tracker(self, label: str) -> VelocityTracker:
         if label not in self._trackers:
             self._trackers[label] = VelocityTracker(window=self.window)
         return self._trackers[label]
+
+    def _pinch_window(self, label: str) -> Deque[float]:
+        if label not in self._pinch_wins:
+            self._pinch_wins[label] = deque(maxlen=self.window)
+        return self._pinch_wins[label]
 
     def update(self, hands: List[HandLandmarks]) -> List[Gesture]:
         """Process the current frame's detected hands and return gestures."""
@@ -379,26 +428,39 @@ class GestureRecognizer:
             centroid = hand.centroid
             tracker = self._tracker(label)
             tracker.update(centroid)
-
-            swipe = detect_swipe(tracker, self.swipe_velocity)
-            if swipe is not None and hand.is_open_palm():
-                events.append(
-                    Gesture(swipe, magnitude=abs(tracker.horizontal_velocity()),
-                            position=centroid, hand=label)
-                )
-                tracker.reset()
-
+            pinch_win = self._pinch_window(label)
             curr_pinch = hand.pinch()
-            pinch_evt = classify_pinch_change(
-                self._prev_pinch.get(label), curr_pinch, self.pinch_sensitivity
-            )
-            self._prev_pinch[label] = curr_pinch
-            if pinch_evt is not None:
-                events.append(
-                    Gesture(pinch_evt, magnitude=curr_pinch,
-                            position=centroid, hand=label)
-                )
+            pinch_win.append(curr_pinch)
+            pinch_net = pinch_win[-1] - pinch_win[0] if len(pinch_win) >= 2 else 0.0
 
+            # One dynamic gesture at most: swipe (hand translating) XOR
+            # pinch/zoom (hand still, fingers moving). This is what keeps a
+            # swipe from also reading as a zoom and vice versa.
+            dynamic = arbitrate_dynamic(
+                tracker.horizontal_velocity(), tracker.total_speed(), pinch_net,
+                self.swipe_velocity, self.pinch_sensitivity,
+                horizontal_travel=tracker.horizontal_travel(),
+                vertical_travel=tracker.vertical_spread(),
+            )
+
+            if dynamic in (GestureType.SWIPE_LEFT, GestureType.SWIPE_RIGHT):
+                # A swipe is an *open-hand* translation; a moving fist is a drag.
+                if hand.is_open_palm():
+                    events.append(
+                        Gesture(dynamic, magnitude=abs(tracker.horizontal_velocity()),
+                                position=centroid, hand=label)
+                    )
+                    tracker.reset()
+                    pinch_win.clear()
+                    continue
+            elif dynamic in (GestureType.PINCH, GestureType.SPREAD):
+                events.append(
+                    Gesture(dynamic, magnitude=curr_pinch, position=centroid, hand=label)
+                )
+                pinch_win.clear()
+                continue
+
+            # No dynamic gesture this frame -> fall back to a single static pose.
             if is_grab(hand.points, self.pinch_threshold):
                 events.append(
                     Gesture(GestureType.GRAB, magnitude=curr_pinch,
