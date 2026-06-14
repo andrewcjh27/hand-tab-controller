@@ -227,3 +227,45 @@ def test_recognizer_still_hand_pinch_emits_no_swipe():
     assert GestureType.SPREAD in types
     assert GestureType.SWIPE_LEFT not in types
     assert GestureType.SWIPE_RIGHT not in types
+
+
+# ----- apply_thresholds (live reload) --------------------------------------
+
+
+def test_apply_thresholds_updates_values():
+    rec = GestureRecognizer({"swipe_velocity": 0.04, "pinch_sensitivity": 0.05,
+                             "pinch_threshold": 0.4, "smoothing_window": 5})
+    rec.apply_thresholds({"swipe_velocity": 0.1, "pinch_sensitivity": 0.2,
+                          "pinch_threshold": 0.6, "smoothing_window": 5})
+    assert rec.swipe_velocity == 0.1
+    assert rec.pinch_sensitivity == 0.2
+    assert rec.pinch_threshold == 0.6
+
+
+def test_apply_thresholds_missing_keys_keep_current():
+    rec = GestureRecognizer({"swipe_velocity": 0.04, "pinch_sensitivity": 0.05,
+                             "pinch_threshold": 0.4, "smoothing_window": 5})
+    rec.apply_thresholds({"swipe_velocity": 0.09})
+    assert rec.swipe_velocity == 0.09
+    assert rec.pinch_sensitivity == 0.05  # unchanged
+    assert rec.pinch_threshold == 0.4     # unchanged
+    assert rec.window == 5                # unchanged
+
+
+def test_apply_thresholds_changing_window_clears_trackers():
+    rec = GestureRecognizer({"smoothing_window": 5})
+    # Seed per-hand state so we can confirm it's reset on a window change.
+    rec.update([HandLandmarks(make_hand(open_fingers=4), "Right")])
+    assert rec._trackers and rec._pinch_wins
+    rec.apply_thresholds({"smoothing_window": 9})
+    assert rec.window == 9
+    assert rec._trackers == {}
+    assert rec._pinch_wins == {}
+
+
+def test_apply_thresholds_same_window_keeps_trackers():
+    rec = GestureRecognizer({"smoothing_window": 5})
+    rec.update([HandLandmarks(make_hand(open_fingers=4), "Right")])
+    seeded = dict(rec._trackers)
+    rec.apply_thresholds({"swipe_velocity": 0.2, "smoothing_window": 5})
+    assert rec._trackers == seeded  # window unchanged -> state preserved

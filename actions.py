@@ -50,6 +50,19 @@ class _BaseRouter:
         self._moving = False
         self.log: List[str] = []
 
+    # ----- runtime config swap ------------------------------------------
+    def set_config(self, config: Config) -> None:
+        """Adopt a new :class:`Config` at runtime (for live reload).
+
+        Swaps ``self.config`` so subsequent events use the new mappings and
+        ``cooldown_ms``. Cooldown and mappings are read live from ``self.config``
+        on each event, so no other cached state needs refreshing; the per-action
+        cooldown timestamps are cleared so the new cooldown window applies
+        immediately. ``log`` is left intact.
+        """
+        self.config = config
+        self._last_fire.clear()
+
     # ----- cooldown -----------------------------------------------------
     def _ready(self, action: str) -> bool:
         cooldown = self.config.threshold("cooldown_ms") / 1000.0

@@ -21,7 +21,8 @@ def test_help_lines_header_mentions_backend():
     config = Config(backend="canvas")
     lines = main._help_lines(config)
     assert lines[0].startswith("Backend: canvas")
-    assert "q to quit" in lines[0]
+    assert "q quit" in lines[0]
+    assert "r reload" in lines[0]
 
 
 def test_help_lines_has_one_line_per_mapping():
@@ -150,3 +151,68 @@ def test_status_text_uses_friendly_gesture_label():
 def test_status_text_tracking_and_no_hand():
     assert main._status_text([], hands_present=True) == "Tracking..."
     assert main._status_text([], hands_present=False) == "No hand"
+
+
+# ----- reload_config (live reload) -----------------------------------------
+
+
+class _FakeRecognizer:
+    """Minimal stand-in capturing the dict passed to apply_thresholds."""
+
+    def __init__(self):
+        self.applied = None
+
+    def apply_thresholds(self, cfg):
+        self.applied = cfg
+
+
+class _FakeRouter:
+    def __init__(self):
+        self.config = None
+
+    def set_config(self, config):
+        self.config = config
+
+
+def test_reload_config_applies_to_recognizer_and_router(monkeypatch):
+    new_cfg = Config(
+        mappings={"SWIPE_LEFT": "prev_app"},
+        thresholds={"swipe_velocity": 0.123, "pinch_sensitivity": 0.05,
+                    "pinch_threshold": 0.4, "smoothing_window": 9,
+                    "cooldown_ms": 900, "move_speed": 40, "resize_step": 0.08},
+        backend="os",
+    )
+    monkeypatch.setattr(main, "load_config", lambda: new_cfg)
+    rec = _FakeRecognizer()
+    router = _FakeRouter()
+
+    config, help_lines = main.reload_config(rec, router)
+
+    assert config is new_cfg
+    assert router.config is new_cfg
+    # Recognizer got the fresh thresholds.
+    assert rec.applied["swipe_velocity"] == 0.123
+    assert rec.applied["smoothing_window"] == 9
+    # help_lines rebuilt from the new config.
+    assert help_lines[0].startswith("Backend: os")
+    assert any("prev_app" in line for line in help_lines[1:])
+
+
+def test_reload_config_works_with_real_recognizer_and_router(monkeypatch):
+    from gestures import GestureRecognizer
+    from actions import ActionRouter
+
+    monkeypatch.setattr(main, "load_config",
+                        lambda: Config(thresholds={**Config().thresholds,
+                                                   "swipe_velocity": 0.2,
+                                                   "smoothing_window": 11},
+                                       backend="canvas"))
+    rec = GestureRecognizer({"swipe_velocity": 0.04, "smoothing_window": 5})
+    router = ActionRouter(main.build_workspace(), Config())
+
+    config, help_lines = main.reload_config(rec, router)
+
+    assert rec.swipe_velocity == 0.2
+    assert rec.window == 11
+    assert router.config is config
+    assert help_lines[0].startswith("Backend: canvas")

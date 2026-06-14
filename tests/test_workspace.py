@@ -134,3 +134,49 @@ def test_toggle_double_view_remappable():
     router = ActionRouter(ws, cfg, clock=FakeClock())
     assert router.handle(Gesture(GestureType.OPEN_PALM)) is True
     assert ws.double_view is True
+
+
+# ----- set_config (live reload) --------------------------------------------
+
+
+def test_set_config_swaps_mapping():
+    ws = make_workspace(3)
+    cfg = Config()  # SWIPE_RIGHT -> next_tab by default
+    router = ActionRouter(ws, cfg, clock=FakeClock())
+    router.handle(Gesture(GestureType.SWIPE_RIGHT))
+    assert ws.active_tab.title == "Tab1"
+
+    # New config remaps SWIPE_RIGHT to prev_tab; subsequent events use it.
+    new_cfg = Config()
+    new_cfg.mappings["SWIPE_RIGHT"] = "prev_tab"
+    router.set_config(new_cfg)
+    assert router.config is new_cfg
+    router.handle(Gesture(GestureType.SWIPE_RIGHT))
+    assert ws.active_tab.title == "Tab0"  # went backward, not forward
+
+
+def test_set_config_applies_new_cooldown():
+    ws = make_workspace(3)
+    clock = FakeClock()
+    cfg = Config()
+    cfg.thresholds["cooldown_ms"] = 10_000
+    router = ActionRouter(ws, cfg, clock=clock)
+    g = Gesture(GestureType.SWIPE_RIGHT)
+    assert router.handle(g) is True
+    assert router.handle(g) is False  # long cooldown blocks the repeat
+
+    # Reload with a zero cooldown -> the next event fires immediately.
+    new_cfg = Config()
+    new_cfg.thresholds["cooldown_ms"] = 0
+    router.set_config(new_cfg)
+    assert router.handle(g) is True
+
+
+def test_set_config_keeps_log():
+    ws = make_workspace(3)
+    router = ActionRouter(ws, Config(), clock=FakeClock())
+    router.handle(Gesture(GestureType.SWIPE_RIGHT))
+    assert router.log  # has an entry
+    before = list(router.log)
+    router.set_config(Config())
+    assert router.log == before  # log preserved across reload
