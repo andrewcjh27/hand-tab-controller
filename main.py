@@ -25,11 +25,13 @@ import os
 import sys
 import time
 
-from config import load_config, resolve_camera_index
-from gestures import GestureRecognizer, HandLandmarks
+from config import load_config, resolve_camera_index, save_thresholds
+from gestures import GestureRecognizer, HandLandmarks, VelocityTracker
 from actions import ActionRouter, OSActionRouter
 from os_control import OSWindowController
 from workspace import Workspace
+import calibration
+import training
 import ui
 
 _MISSING = []
@@ -97,20 +99,334 @@ def list_cameras(max_index: int = 5) -> int:
 
 
 def _make_render(config, workspace, router, help_lines):
-    """Return a function ``render(frame, points) -> canvas`` for the backend."""
+    """Return ``render(frame, points, status, action, show_help) -> canvas``.
+
+    ``status`` is the current detected gesture (or a tracking hint), ``action``
+    is the most recent action that fired, and ``show_help`` toggles the full
+    mapping list. The OS backend uses the minimal HUD; canvas keeps the demo.
+    """
     if config.backend == "canvas":
-        def render(frame, points):
-            canvas = ui.render_workspace(workspace, help_lines + router.log[-4:])
+        def render(frame, points, status, action, show_help):
+            log = (help_lines if show_help else []) + router.log[-4:]
+            canvas = ui.render_workspace(workspace, log)
             ui.draw_landmarks(frame, points)
             return ui.overlay_camera(canvas, frame)
         return render
 
-    # OS mode: show the camera feed full-frame with landmark dots and a text
-    # panel describing detected gestures / fired window actions.
-    def render(frame, points):
+    # OS mode: minimal HUD over the mirrored camera feed.
+    def render(frame, points, status, action, show_help):
         ui.draw_landmarks(frame, points)
-        return ui.overlay_text_panel(frame, help_lines + router.log[-5:])
+        return ui.overlay_minimal(
+            frame, status=status, action=action, show_help=show_help,
+            help_lines=help_lines, max_chars=42,
+        )
     return render
+
+
+# Human-friendly labels for the status readout.
+_GESTURE_LABELS = {
+    "SWIPE_LEFT": "Swipe left", "SWIPE_RIGHT": "Swipe right",
+    "PINCH": "Pinch", "SPREAD": "Spread", "POINT": "Point",
+    "GRAB": "Grab", "OPEN_PALM": "Open palm",
+    "TWO_HAND_PINCH": "Two-hand", "V_SIGN": "Peace sign",
+}
+
+
+def _status_text(events, hands_present: bool) -> str:
+    """Pick the status-bar label from this frame's events / tracking state."""
+    if events:
+        return _GESTURE_LABELS.get(events[-1].type.value, events[-1].type.value)
+    if hands_present:
+        return "Tracking..."
+    return "No hand"
+
+
+def _landmarker_options():
+    """Build HandLandmarker options (VIDEO mode). Requires mediapipe present."""
+    return mp_vision.HandLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
+        num_hands=2,
+        min_hand_detection_confidence=0.6,
+        min_tracking_confidence=0.5,
+        running_mode=mp_vision.RunningMode.VIDEO,
+    )
+
+
+def _detect_hands(result) -> tuple[list, list]:
+    """Convert a HandLandmarker result into (HandLandmarks list, overlay points)."""
+    detected: list[HandLandmarks] = []
+    points: list = []
+    if result.hand_landmarks:
+        handedness = result.handedness or []
+        for i, hand_lms in enumerate(result.hand_landmarks):
+            label = "Right"
+            if i < len(handedness) and handedness[i]:
+                label = handedness[i][0].category_name
+            hl = HandLandmarks.from_task_landmarks(hand_lms, label=label)
+            detected.append(hl)
+            points.append(hl.points)
+    return detected, points
+
+
+def _preflight(cam_index: int):
+    """Open the camera + verify the model file. Returns (cap, error_code).
+
+    On success returns ``(cap, 0)``; on failure ``(None, code)`` with a message
+    already printed to stderr.
+    """
+    cap = cv2.VideoCapture(cam_index)
+    if not cap.isOpened():
+        print(
+            f"Could not open webcam (VideoCapture({cam_index})). Check camera "
+            "permissions, or run with --list-cameras to find a working index.",
+            file=sys.stderr,
+        )
+        return None, 2
+    if not os.path.exists(MODEL_PATH):
+        print(
+            f"Missing hand landmark model: {MODEL_PATH}\n"
+            "Download it with:\n    curl -sSL -o hand_landmarker.task "
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+            "hand_landmarker/float16/1/hand_landmarker.task",
+            file=sys.stderr,
+        )
+        cap.release()
+        return None, 3
+    return cap, 0
+
+
+def _capture(cap, landmarker, title: str, duration: float, on_frame) -> bool:
+    """Show ``title`` + a countdown for ``duration`` seconds, calling
+    ``on_frame(hands, dt)`` each frame. Returns False if the user pressed q.
+    """
+    start = time.monotonic()
+    prev = start
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            return True
+        now = time.monotonic()
+        remaining = max(0.0, duration - (now - start))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
+                                                       data=rgb), int(now * 1000))
+        detected, points = _detect_hands(result)
+        on_frame(detected, now - prev)
+        prev = now
+        ui.draw_landmarks(frame, points)
+        view = ui.overlay_prompt(frame, title, f"{remaining:0.0f}s  (q to abort)")
+        if view is not None:
+            cv2.imshow("Hand Gesture Controller - Calibration", view)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            return False
+        if remaining <= 0:
+            return True
+
+
+def _collect_swipe_peaks(window: int):
+    """Return (on_frame, peaks) collecting peak |horizontal velocity| per swipe."""
+    tracker = VelocityTracker(window=window)
+    peaks: list[float] = []
+    state = {"in_burst": False, "peak": 0.0}
+    floor = 0.02
+
+    def on_frame(hands, dt):
+        if not hands:
+            return
+        tracker.update(hands[0].centroid)
+        vel = abs(tracker.horizontal_velocity())
+        if vel > floor:
+            state["in_burst"] = True
+            state["peak"] = max(state["peak"], vel)
+        elif state["in_burst"]:
+            peaks.append(state["peak"])
+            state["in_burst"], state["peak"] = False, 0.0
+
+    return on_frame, peaks
+
+
+def _collect_pinch_deltas():
+    """Return (on_frame, deltas) collecting abs frame-to-frame pinch changes."""
+    deltas: list[float] = []
+    prev = {"d": None}
+
+    def on_frame(hands, dt):
+        if not hands:
+            return
+        d = hands[0].pinch()
+        if prev["d"] is not None:
+            deltas.append(abs(d - prev["d"]))
+        prev["d"] = d
+
+    return on_frame, deltas
+
+
+def _collect_pinch_distances():
+    """Return (on_frame, dists) collecting raw pinch distances while a hand shows."""
+    dists: list[float] = []
+
+    def on_frame(hands, dt):
+        if hands:
+            dists.append(hands[0].pinch())
+
+    return on_frame, dists
+
+
+def calibrate(cli_camera: int | None = None) -> int:
+    """Guided per-gesture calibration; writes tuned thresholds to gestures.json."""
+    if _MISSING:
+        print("Missing required packages: " + ", ".join(_MISSING)
+              + "\nInstall them with:\n    pip install -r requirements.txt",
+              file=sys.stderr)
+        return 1
+    config = load_config()
+    cam_index = resolve_camera_index(config.camera_index, cli_camera)
+    cap, err = _preflight(cam_index)
+    if cap is None:
+        return err
+
+    print("Calibration: follow the on-screen prompts. Press q to abort.")
+    measured: dict[str, float | None] = {}
+    window = int(config.threshold("smoothing_window"))
+    aborted = False
+    with mp_vision.HandLandmarker.create_from_options(_landmarker_options()) as lm:
+        # During the swipe step, also record the pinch jitter so the zoom
+        # threshold can be floored above it (swipe -> false zoom fix).
+        swipe_cb, peaks = _collect_swipe_peaks(window)
+        noise_cb, swipe_noise = _collect_pinch_deltas()
+
+        def swipe_frame(hands, dt):
+            swipe_cb(hands, dt)
+            noise_cb(hands, dt)
+
+        if not _capture(cap, lm, "Swipe LEFT and RIGHT a few times", 6.0, swipe_frame):
+            aborted = True
+        if not aborted:
+            measured["swipe_velocity"] = calibration.recommend_swipe_velocity(peaks)
+
+            pinch_cb, deltas = _collect_pinch_deltas()
+            if not _capture(cap, lm, "Hold your hand STILL; pinch and spread", 6.0, pinch_cb):
+                aborted = True
+        if not aborted:
+            measured["pinch_sensitivity"] = calibration.recommend_pinch_sensitivity(
+                deltas, noise_deltas=swipe_noise
+            )
+
+            fist_cb, closed = _collect_pinch_distances()
+            if not _capture(cap, lm, "Make a FIST and hold", 4.0, fist_cb):
+                aborted = True
+        if not aborted:
+            open_cb, opened = _collect_pinch_distances()
+            if not _capture(cap, lm, "OPEN your hand and hold", 4.0, open_cb):
+                aborted = True
+        if not aborted:
+            measured["pinch_threshold"] = calibration.recommend_pinch_threshold(closed, opened)
+
+    cap.release()
+    cv2.destroyAllWindows()
+    if aborted:
+        print("Calibration aborted; gestures.json unchanged.")
+        return 0
+
+    new_thresholds = calibration.merge_thresholds(config.thresholds, measured)
+    path = save_thresholds(new_thresholds)
+    print("Calibration complete. Saved to", path)
+    for key in ("swipe_velocity", "pinch_sensitivity", "pinch_threshold"):
+        got = measured.get(key)
+        note = f"{got}" if got is not None else "(unchanged — not measured)"
+        print(f"  {key:<18} {note}")
+    return 0
+
+
+def train(cli_camera: int | None = None) -> int:
+    """Interactive trainer: practice each gesture while it acts on demo tabs.
+
+    Uses the canvas workspace so every gesture has a visible effect (tab switch,
+    resize, drag, split). Counts reps per movement, collects calibration samples
+    along the way, and saves tuned thresholds at the end.
+    """
+    if _MISSING:
+        print("Missing required packages: " + ", ".join(_MISSING)
+              + "\nInstall them with:\n    pip install -r requirements.txt",
+              file=sys.stderr)
+        return 1
+    config = load_config()
+    cam_index = resolve_camera_index(config.camera_index, cli_camera)
+    cap, err = _preflight(cam_index)
+    if cap is None:
+        return err
+
+    workspace = build_workspace()
+    router = ActionRouter(workspace, config)  # canvas backend -> visible effects
+    recognizer = GestureRecognizer({
+        "swipe_velocity": config.threshold("swipe_velocity"),
+        "pinch_sensitivity": config.threshold("pinch_sensitivity"),
+        "pinch_threshold": config.threshold("pinch_threshold"),
+        "smoothing_window": int(config.threshold("smoothing_window")),
+    })
+    tracker = training.TrainingTracker()
+    window = int(config.threshold("smoothing_window"))
+
+    # Per-sample collectors, dispatched by the current step's `sample` tag.
+    swipe_cb, swipe_peaks = _collect_swipe_peaks(window)
+    motion_cb, pinch_deltas = _collect_pinch_deltas()
+    open_cb, pinch_open = _collect_pinch_distances()
+    closed_cb, pinch_closed = _collect_pinch_distances()
+    collectors = {"swipe": swipe_cb, "pinch_motion": motion_cb,
+                  "pinch_open": open_cb, "pinch_closed": closed_cb}
+
+    print("Training: perform each movement; s skips a step, q quits.")
+    with mp_vision.HandLandmarker.create_from_options(_landmarker_options()) as lm:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
+                                                  data=rgb), int(time.monotonic() * 1000))
+            detected, points = _detect_hands(result)
+            events = recognizer.update(detected)
+            router.handle_all(events)  # tabs visibly react
+
+            step = tracker.current
+            if step is not None and step.sample and detected:
+                collectors[step.sample](detected, 0.0)
+            for g in events:
+                tracker.record(g.type.value)
+
+            canvas = ui.render_workspace(workspace)
+            ui.draw_landmarks(frame, points)
+            canvas = ui.overlay_camera(canvas, frame)
+            if tracker.is_complete:
+                canvas = ui.overlay_training(canvas, "", "", "", 0, 0, 0, 0, complete=True)
+            else:
+                si, st, rd, rt = tracker.progress()
+                canvas = ui.overlay_training(canvas, step.label, step.instruction,
+                                             step.effect, rd, rt, si, st)
+            if canvas is not None:
+                cv2.imshow("Hand Gesture Controller - Training", canvas)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            if key == ord("s"):
+                tracker.skip()
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    measured = {
+        "swipe_velocity": calibration.recommend_swipe_velocity(swipe_peaks),
+        "pinch_sensitivity": calibration.recommend_pinch_sensitivity(pinch_deltas),
+        "pinch_threshold": calibration.recommend_pinch_threshold(pinch_closed, pinch_open),
+    }
+    path = save_thresholds(calibration.merge_thresholds(config.thresholds, measured))
+    done = "complete" if tracker.is_complete else "ended early"
+    print(f"Training {done}. Saved thresholds to {path}")
+    for key in ("swipe_velocity", "pinch_sensitivity", "pinch_threshold"):
+        got = measured.get(key)
+        print(f"  {key:<18} {got if got is not None else '(unchanged)'}")
+    return 0
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -122,10 +438,23 @@ def run(argv: list[str] | None = None) -> int:
                         help="Camera index to use (overrides config).")
     parser.add_argument("--backend", choices=["os", "canvas"], default=None,
                         help="Override the config backend.")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Run guided gesture calibration and save tuned "
+                             "thresholds to gestures.json, then exit.")
+    parser.add_argument("--train", action="store_true",
+                        help="Interactive trainer: practice each movement and "
+                             "watch it act on the demo tabs; saves tuned "
+                             "thresholds at the end.")
     args = parser.parse_args(argv)
 
     if args.list_cameras:
         return list_cameras()
+
+    if args.calibrate:
+        return calibrate(args.camera)
+
+    if args.train:
+        return train(args.camera)
 
     if _MISSING:
         print(
@@ -167,34 +496,13 @@ def run(argv: list[str] | None = None) -> int:
     help_lines = _help_lines(config)
     render = _make_render(config, workspace, router, help_lines)
 
-    cap = cv2.VideoCapture(cam_index)
-    if not cap.isOpened():
-        print(
-            f"Could not open webcam (VideoCapture({cam_index})). Check camera "
-            "permissions, or run with --list-cameras to find a working index.",
-            file=sys.stderr,
-        )
-        return 2
+    cap, err = _preflight(cam_index)
+    if cap is None:
+        return err
 
-    if not os.path.exists(MODEL_PATH):
-        print(
-            f"Missing hand landmark model: {MODEL_PATH}\n"
-            "Download it with:\n    curl -sSL -o hand_landmarker.task "
-            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-            "hand_landmarker/float16/1/hand_landmarker.task",
-            file=sys.stderr,
-        )
-        cap.release()
-        return 3
-
-    options = mp_vision.HandLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
-        num_hands=2,
-        min_hand_detection_confidence=0.6,
-        min_tracking_confidence=0.5,
-        running_mode=mp_vision.RunningMode.VIDEO,
-    )
-    with mp_vision.HandLandmarker.create_from_options(options) as landmarker:
+    print("Controls:  q quit   h toggle help")
+    show_help = False
+    with mp_vision.HandLandmarker.create_from_options(_landmarker_options()) as landmarker:
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -203,26 +511,21 @@ def run(argv: list[str] | None = None) -> int:
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             result = landmarker.detect_for_video(mp_image, int(time.monotonic() * 1000))
 
-            detected: list[HandLandmarks] = []
-            points_for_overlay: list = []
-            if result.hand_landmarks:
-                handedness = result.handedness or []
-                for i, hand_lms in enumerate(result.hand_landmarks):
-                    label = "Right"
-                    if i < len(handedness) and handedness[i]:
-                        label = handedness[i][0].category_name
-                    hl = HandLandmarks.from_task_landmarks(hand_lms, label=label)
-                    detected.append(hl)
-                    points_for_overlay.append(hl.points)
-
+            detected, points_for_overlay = _detect_hands(result)
             events = recognizer.update(detected)
             router.handle_all(events)
 
-            canvas = render(frame, points_for_overlay)
+            status = _status_text(events, bool(detected))
+            action = router.log[-1] if router.log else None
+            canvas = render(frame, points_for_overlay, status, action, show_help)
             if canvas is not None:
                 cv2.imshow("Hand Gesture Controller", canvas)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            if key == ord("h"):
+                show_help = not show_help
 
     cap.release()
     cv2.destroyAllWindows()

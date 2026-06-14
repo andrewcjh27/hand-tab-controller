@@ -53,7 +53,7 @@ class _DummyRouter:
 def _patch_ui(monkeypatch):
     """Replace the ui drawing fns with recorders; return a calls dict."""
     calls = {"render_workspace": 0, "overlay_camera": 0,
-             "overlay_text_panel": 0, "draw_landmarks": 0}
+             "overlay_minimal": 0, "draw_landmarks": 0}
 
     def render_workspace(workspace, lines):
         calls["render_workspace"] += 1
@@ -63,9 +63,10 @@ def _patch_ui(monkeypatch):
         calls["overlay_camera"] += 1
         return "canvas+cam"
 
-    def overlay_text_panel(frame, lines):
-        calls["overlay_text_panel"] += 1
-        return "text-panel"
+    def overlay_minimal(frame, status=None, action=None, hint="h: help",
+                        show_help=False, help_lines=None, max_chars=0):
+        calls["overlay_minimal"] += 1
+        return "minimal"
 
     def draw_landmarks(frame, points):
         calls["draw_landmarks"] += 1
@@ -73,7 +74,7 @@ def _patch_ui(monkeypatch):
 
     monkeypatch.setattr(main.ui, "render_workspace", render_workspace)
     monkeypatch.setattr(main.ui, "overlay_camera", overlay_camera)
-    monkeypatch.setattr(main.ui, "overlay_text_panel", overlay_text_panel)
+    monkeypatch.setattr(main.ui, "overlay_minimal", overlay_minimal)
     monkeypatch.setattr(main.ui, "draw_landmarks", draw_landmarks)
     return calls
 
@@ -84,12 +85,12 @@ def test_make_render_canvas_path(monkeypatch):
     router = _DummyRouter()
     render = main._make_render(config, workspace=object(), router=router,
                                help_lines=["H"])
-    out = render(frame="frame", points=[])
+    out = render("frame", [], "Tracking...", "next_app", False)
     # Canvas path renders the workspace + overlays the camera thumbnail.
     assert out == "canvas+cam"
     assert calls["render_workspace"] == 1
     assert calls["overlay_camera"] == 1
-    assert calls["overlay_text_panel"] == 0
+    assert calls["overlay_minimal"] == 0
 
 
 def test_make_render_os_path(monkeypatch):
@@ -98,10 +99,10 @@ def test_make_render_os_path(monkeypatch):
     router = _DummyRouter()
     render = main._make_render(config, workspace=None, router=router,
                                help_lines=["H"])
-    out = render(frame="frame", points=[])
-    # OS path draws landmarks on the frame + a text panel; no workspace canvas.
-    assert out == "text-panel"
-    assert calls["overlay_text_panel"] == 1
+    out = render("frame", [], "Swipe left", "prev_app", False)
+    # OS path draws landmarks on the frame + the minimal HUD; no workspace canvas.
+    assert out == "minimal"
+    assert calls["overlay_minimal"] == 1
     assert calls["render_workspace"] == 0
     assert calls["overlay_camera"] == 0
     assert calls["draw_landmarks"] == 1
@@ -135,3 +136,17 @@ def test_build_workspace_creates_four_active_tabs():
     assert len(ws.tabs) == 4
     assert [t.title for t in ws.tabs] == ["Editor", "Browser", "Terminal", "Docs"]
     assert ws.tabs[0].active is True
+
+
+# ----- _status_text ---------------------------------------------------------
+
+
+def test_status_text_uses_friendly_gesture_label():
+    from gestures import Gesture, GestureType
+    events = [Gesture(GestureType.SWIPE_LEFT)]
+    assert main._status_text(events, hands_present=True) == "Swipe left"
+
+
+def test_status_text_tracking_and_no_hand():
+    assert main._status_text([], hands_present=True) == "Tracking..."
+    assert main._status_text([], hands_present=False) == "No hand"

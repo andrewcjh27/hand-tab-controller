@@ -5,7 +5,10 @@ import pytest
 
 from gestures import (
     GestureType,
+    GestureRecognizer,
+    HandLandmarks,
     VelocityTracker,
+    arbitrate_dynamic,
     classify_pinch_change,
     count_extended_fingers,
     detect_swipe,
@@ -126,3 +129,101 @@ def test_two_hand_pinch_distance():
     b = make_hand()
     b = b + np.array([0.3, 0.0])
     assert two_hand_pinch_distance(a, b) > 0.25
+
+
+# ----- total_speed ----------------------------------------------------------
+
+
+def test_total_speed_diagonal():
+    tracker = VelocityTracker(window=5)
+    # move (0.3, 0.4) over 4 steps -> displacement 0.5, /4 = 0.125
+    for i in range(5):
+        tracker.update((0.1 + 0.075 * i, 0.1 + 0.1 * i))
+    assert tracker.total_speed() == pytest.approx(0.125, abs=1e-6)
+
+
+# ----- arbitrate_dynamic: swipe vs zoom, mutually exclusive ----------------
+
+
+def test_arbitrate_translating_hand_is_swipe_not_zoom():
+    # Hand moving right fast, with a large pinch change present too -> SWIPE,
+    # never a zoom (a moving hand can't be a zoom).
+    g = arbitrate_dynamic(
+        horizontal_velocity=0.1, palm_speed=0.1, pinch_net=0.5,
+        swipe_velocity=0.05, pinch_sensitivity=0.05,
+        horizontal_travel=0.4, vertical_travel=0.05,
+    )
+    assert g is GestureType.SWIPE_RIGHT
+
+
+def test_arbitrate_still_hand_changing_pinch_is_zoom():
+    spread = arbitrate_dynamic(
+        horizontal_velocity=0.0, palm_speed=0.0, pinch_net=0.2,
+        swipe_velocity=0.05, pinch_sensitivity=0.05,
+        horizontal_travel=0.0, vertical_travel=0.0,
+    )
+    pinch = arbitrate_dynamic(
+        horizontal_velocity=0.0, palm_speed=0.0, pinch_net=-0.2,
+        swipe_velocity=0.05, pinch_sensitivity=0.05,
+        horizontal_travel=0.0, vertical_travel=0.0,
+    )
+    assert spread is GestureType.SPREAD
+    assert pinch is GestureType.PINCH
+
+
+def test_arbitrate_ambiguous_midband_is_none():
+    # palm_speed between still*factor (0.03) and swipe_velocity (0.05): neither.
+    g = arbitrate_dynamic(
+        horizontal_velocity=0.04, palm_speed=0.04, pinch_net=0.5,
+        swipe_velocity=0.05, pinch_sensitivity=0.05,
+        horizontal_travel=0.16, vertical_travel=0.0,
+    )
+    assert g is None
+
+
+def test_arbitrate_vertical_translation_not_swipe():
+    g = arbitrate_dynamic(
+        horizontal_velocity=0.06, palm_speed=0.1, pinch_net=0.0,
+        swipe_velocity=0.05, pinch_sensitivity=0.05,
+        horizontal_travel=0.05, vertical_travel=0.4,  # mostly vertical
+    )
+    assert g is None
+
+
+# ----- recognizer integration: the swipe/zoom confusion fix ----------------
+
+
+def _shift(points, dx):
+    return points + np.array([dx, 0.0])
+
+
+def test_recognizer_open_hand_swipe_emits_no_zoom():
+    rec = GestureRecognizer({"swipe_velocity": 0.03, "pinch_sensitivity": 0.04,
+                             "pinch_threshold": 0.3, "smoothing_window": 5})
+    types = []
+    base = make_hand(open_fingers=4, pinch=0.5)
+    for i in range(6):
+        # translate right; jitter the pinch so the OLD code would emit PINCH/SPREAD.
+        pts = _shift(base, 0.04 * i)
+        pinch_jitter = 0.5 + (0.06 if i % 2 else -0.06)
+        pts = pts.copy()
+        pts[4] = (pts[8][0] + pinch_jitter, pts[8][1])  # move thumb -> change pinch
+        for g in rec.update([HandLandmarks(pts, "Right")]):
+            types.append(g.type)
+    assert GestureType.SWIPE_RIGHT in types
+    assert GestureType.PINCH not in types
+    assert GestureType.SPREAD not in types
+
+
+def test_recognizer_still_hand_pinch_emits_no_swipe():
+    rec = GestureRecognizer({"swipe_velocity": 0.05, "pinch_sensitivity": 0.04,
+                             "pinch_threshold": 0.3, "smoothing_window": 5})
+    types = []
+    for i in range(6):
+        # centroid fixed (no translation); pinch grows each frame -> SPREAD.
+        pts = make_hand(open_fingers=4, pinch=0.3 + 0.05 * i)
+        for g in rec.update([HandLandmarks(pts, "Right")]):
+            types.append(g.type)
+    assert GestureType.SPREAD in types
+    assert GestureType.SWIPE_LEFT not in types
+    assert GestureType.SWIPE_RIGHT not in types

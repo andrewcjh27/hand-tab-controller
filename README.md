@@ -75,9 +75,46 @@ A valid `--camera` flag overrides `camera_index` in the config.
 .venv/bin/python main.py --backend canvas   # in-app demo, no Accessibility needed
 ```
 
-Press `q` to quit. The OpenCV window shows the mirrored camera feed with
-hand-landmark dots and a text panel listing the gesture mappings and the most
-recent fired actions, so you can see what was detected and what happened.
+The OpenCV window shows the mirrored camera feed with subtle hand-landmark dots
+and a **minimal HUD**: a thin bottom bar with the current detected gesture on the
+left and the most recent action on the right. It stays out of the way.
+
+Controls:
+
+- **`q`** — quit
+- **`h`** — toggle the full gesture→action mapping list (hidden by default)
+
+## Calibrate to your hand (recommended)
+
+Default sensitivity is intentionally low so gestures don't fire on incidental
+motion. For the best fit, calibrate to your own movements:
+
+```bash
+.venv/bin/python main.py --calibrate
+```
+
+It walks you through a few prompts — swipe left/right, pinch & spread, make a
+fist, open your hand — measures your actual motion, and writes tuned
+`swipe_velocity`, `pinch_sensitivity`, and `pinch_threshold` values into
+`gestures.json` (other settings are preserved). Press `q` during calibration to
+abort without saving. Re-run anytime it feels too sensitive or not responsive
+enough.
+
+### Interactive trainer (`--train`)
+
+For a fuller, hands-on session that teaches every movement and lets you *see each
+one act on the tabs*:
+
+```bash
+.venv/bin/python main.py --train
+```
+
+It steps through all nine gestures one at a time on a demo tab workspace. Each
+step shows what to do and what it does (next/previous tab, grow/shrink, drag,
+split), asks for several reps, and fills in the progress dots as it recognizes
+you — so you build muscle memory while watching the effect. `s` skips a step,
+`q` quits. Calibration samples are gathered as you train, and tuned thresholds
+are saved at the end. This is the recommended way to get comfortable.
 
 ## Gestures → window actions (OS mode)
 
@@ -96,6 +133,19 @@ recent fired actions, so you can see what was detected and what happened.
 App cycling covers visible, non-background application processes. The hand
 centroid (normalized) is mapped to absolute screen coordinates (mirrored in x)
 so the window follows your hand during a drag.
+
+### Swipe vs. zoom
+
+Only one gesture fires per frame, decided by how the whole hand moves:
+
+- **Swipe** — *move your whole hand* across the frame (open palm). A translating
+  hand is always read as a swipe, never a zoom.
+- **Zoom (pinch/spread)** — *hold your hand roughly still* and change the
+  thumb-index distance. A stationary hand with moving fingers is a zoom.
+
+Motion that's neither clearly moving nor clearly still does nothing, on purpose.
+If swipes and zooms still get confused, run `--calibrate` — it now measures the
+finger jitter during your swipes and sets the zoom threshold just above it.
 
 ### Canvas (demo) mode
 

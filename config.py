@@ -66,14 +66,18 @@ DEFAULT_OS_MAPPINGS: Dict[str, str] = {
 DEFAULT_BACKEND = "os"
 DEFAULT_CAMERA_INDEX = 0
 
+# Defaults tuned conservatively (low sensitivity) so gestures don't fire on
+# incidental motion. `--calibrate` overwrites these with values measured from
+# the user's own hand. Higher swipe_velocity / longer cooldown / a larger
+# smoothing window all reduce accidental triggering.
 DEFAULT_THRESHOLDS: Dict[str, float] = {
-    "swipe_velocity": 0.04,
-    "pinch_sensitivity": 0.05,
-    "pinch_threshold": 0.4,
-    "smoothing_window": 5,
-    "cooldown_ms": 600,
+    "swipe_velocity": 0.07,
+    "pinch_sensitivity": 0.09,
+    "pinch_threshold": 0.3,
+    "smoothing_window": 7,
+    "cooldown_ms": 900,
     "move_speed": 40,
-    "resize_step": 0.1,
+    "resize_step": 0.08,
 }
 
 
@@ -278,6 +282,26 @@ def write_default_config(path: str | None = None) -> str:
             fh,
             indent=2,
         )
+    return path
+
+
+def save_thresholds(thresholds: Dict[str, float], path: str | None = None) -> str:
+    """Update only the ``thresholds`` block of gestures.json, preserving the rest.
+
+    Used by ``--calibrate`` to persist measured values without disturbing the
+    user's backend / camera_index / mappings. Creates the file if absent.
+    """
+    path = path or DEFAULT_CONFIG_PATH
+    data: Dict = {}
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    data.setdefault("backend", DEFAULT_BACKEND)
+    data.setdefault("camera_index", DEFAULT_CAMERA_INDEX)
+    data.setdefault("mappings", dict(DEFAULT_OS_MAPPINGS))
+    data["thresholds"] = dict(thresholds)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
     return path
 
 
